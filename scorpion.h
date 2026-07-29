@@ -10,7 +10,7 @@
 #define IPC_MAX_DATA     64
 #define IPC_QUEUE_DEPTH  16
 
-#define HEAP_SIZE       (384u * 1024u)
+#define HEAP_SIZE       (1024u * 1024u)
 #define PAGE_SIZE       4096u
 #define PAGE_SHIFT      12u
 #define PAGE_MASK       (~(uintptr_t)(PAGE_SIZE - 1u))

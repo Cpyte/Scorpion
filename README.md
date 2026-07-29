@@ -4,9 +4,9 @@ Scorpion is a cooperative-multitasking, single-address-space kernel for the
 Raspberry Pi RP2350 microcontroller running in **RISC-V 32-bit mode**
 (RV32IMAC + bit‑manipulation extensions, Hazard3 cores). It provides a
 minimal system-call interface, a hierarchical heap allocator, a bitmap-based
-physical page allocator, a FUSE-like filesystem on an emulated flash device,
-an ELF loader, and a driver registration framework — all from scratch with no
-external library dependencies.
+physical page allocator, a FUSE-like filesystem on the RP2350's external QSPI
+flash, an ELF loader, and a driver registration framework — all from scratch
+with no external library dependencies.
 
 ---
 
@@ -72,14 +72,14 @@ external library dependencies.
 │                                                              │
 │  ┌──────────────────────────────────────────────────┐       │
 │  │  RP2350 Hardware (RISC-V Hazard3 cores)          │       │
-│  │  UART @ 0x10000000  ·  SRAM @ 0x20000000          │       │
+│  │  XIP Flash @ 0x10000000  ·  SRAM @ 0x20000000    │       │
+│  │  UART (PL011) @ 0x40070000                       │       │
 │  └──────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> **Note:** The current build does **not** yet include support for external
-> controllers (gamepad, display drivers, etc.). Controller support is planned
-> for a future release.
+> **Note:** Only the RP2350 RISC-V build target is currently supported.
+> Other microcontroller targets are planned for a future release.
 
 Scorpion is a **cooperative single-address-space** kernel:
 - All code runs in machine mode (M-mode); there is no separate supervisor mode.
@@ -155,30 +155,30 @@ cmake --build build
 ## Memory Layout
 
 The kernel occupies the RP2350's internal SRAM. The linker script
-(`arch/riscv32/kernel.ld`) defines two regions:
+(`arch/riscv32/kernel.ld`) maps SRAM at `0x20000000`:
 
 ```
-0x20000000 ┌─────────────────────┐  ◄── SRAM0 base (512 KB total)
+0x20000000 ┌─────────────────────┐  ◄── SRAM base (520 KB total)
             │ .text + .rodata    │
             ├─────────────────────┤
             │ .data + .bss       │
             ├─────────────────────┤
-            │ Heap (≤ 384 KB)    │  bump → free-list → buddy allocator
-            ├─────────────────────┤
-            │ 16 KB guard         │  stack overflow detection
-            ├─────────────────────┤
+            │ Heap                │  bump → free-list → buddy allocator
+            ├─ - - - - - - - - - -│  (16 KB stack guard)
             │ Stack               │  grows downward from _stack_top
 0x2007FFFF └─────────────────────┘  end of SRAM
 ```
 
 | Region      | Address       | Size    | Contents                         |
 |-------------|---------------|---------|----------------------------------|
-| Code+Data   | `0x20000000`  | ≤512K   | `.text`, `.rodata`, `.data`, `.bss`, heap |
+| Code+Data   | `0x20000000`  | varies  | `.text`, `.rodata`, `.data`, `.bss` |
+| Heap        | after BSS     | ~SRAM remainder - 16K | bump + free-list + buddy allocator |
 | Stack       | top of SRAM   | ~16K    | kernel stack (grows down)        |
 
-> **Note:** The RP2350 has 520 KB of SRAM total (SRAM0–SRAM4 at `0x20000000`).
-> The heap array is statically sized at 384 KB (`HEAP_SIZE=393216`); the
-> remaining SRAM after code, data, and BSS provides the effective heap.
+> **Note:** The RP2350A (Pico 2) has 520 KB of SRAM. The heap uses the
+> available memory after the kernel image, minus 16 KB for the stack.
+> The `HEAP_SIZE` constant (default 1 MB) sets the maximum expected heap;
+> the actual runtime size is determined by the linker.
 
 ---
 
@@ -201,10 +201,10 @@ Reset vector
               ▼
           kernel_main()
               │
-              ├─ alloc_init()      → init bump + buddy allocators
-              ├─ trap_init()       → set mtvec to trap_vector
-              ├─ flash_init()      → zero emulated flash
-              ├─ fuse_init()       → mount / format FUSE
+               ├─ alloc_init()      → init bump + buddy allocators
+               ├─ trap_init()       → set mtvec to trap_vector
+               ├─ flash_init()      → locate bootrom flash routines
+               ├─ fuse_init()       → mount / format FUSE
               ├─ stage_pool_init() → pre-allocate I/O buffers
               ├─ process_create()  → create test process
               ├─ scheduler_init()  → create idle process + scheduler context
@@ -217,7 +217,7 @@ Reset vector
 
 ### 1. Heap Memory Allocator (`alloc.c`)
 
-A three-tier allocator built on a static `heap[]` array (384 KB):
+A three-tier allocator backed by a linker-placed heap region:
 
 | Strategy    | Size class         | Mechanism                                      |
 |-------------|--------------------|------------------------------------------------|
@@ -313,7 +313,7 @@ Machine-mode trap handling:
 
 ### 6. UART Console (`console.c`)
 
-- MMIO 16550-compatible UART at base address `0x10000000`.
+- MMIO PL011 UART at base address `0x40070000`.
 - `console_putchar(c)`, `console_write(s, len)`, `console_puts(s)`.
 - Formatted logging: `log_info`, `log_warn`, `log_error`, `panic` with
   `%s`, `%d`, `%u`, `%x`, `%p` format specifiers.
@@ -330,15 +330,17 @@ A generic driver registration and I/O framework:
   - `stage_alloc()` / `stage_free()` — acquire/release buffers.
   - `stage_submit(drv, buf)` — submit a buffer to a driver's `write` callback.
 
-### 8. Emulated Flash (`flash.c`)
+### 8. Flash Storage (`flash.c`)
 
-- In-RAM array (`flash_memory[65536]`) simulating flash storage.
+- RP2350 external QSPI flash, accessed via XIP reads (`0x10000000`) and
+  bootrom function table for erase/program.
 - 256 blocks × 256 bytes = 64 KB total.
 - `flash_read()`, `flash_write()`, `flash_erase()` — block-oriented operations.
+- Erase uses 4 KB sector granularity (bootrom `flash_range_erase`).
 
 ### 9. FUSE Filesystem (`fuse.c`)
 
-A simple flat filesystem layered on the emulated flash:
+A simple flat filesystem layered on the QSPI flash:
 
 - **Superblock** (block 0): magic number (`0x53434653`), entry count, data start.
 - **Directory entries**: up to 16 files, 24-character names, size, first block, mode.
@@ -377,7 +379,7 @@ Key RP2350 features relevant to Scorpion:
 | **Cores**        | 2 × Hazard3 RISC-V (RV32IMAC + B‑ext)   |
 | **SRAM**         | 512 KB (SRAM0–SRAM4, address `0x20000000`) |
 | **XIP Flash**    | External QSPI flash via `0x10000000`     |
-| **UART**         | 16550-compatible at `0x10000000`         |
+| **UART**         | PL011 at `0x40070000`                    |
 | **Boot**         | ROM loads user binary from flash into SRAM or XIP |
 | **Arch flags**   | `-march=rv32imac_zicsr_zifencei_zba_zbb_zbs_zbkb -mabi=ilp32` |
 
@@ -402,7 +404,7 @@ bit-manipulation instructions.
 ├── trap.c                      # Syscall dispatcher (ecall handler)
 ├── console.c / console.h        # UART driver + formatted logging
 ├── driver.c / driver.h          # Driver registration framework + stage buffers
-├── flash.c / flash.h            # Emulated flash storage (in-RAM)
+├── flash.c / flash.h            # QSPI flash driver (bootrom + XIP)
 ├── fuse.c / fuse.h              # FUSE filesystem on flash
 ├── loader.c                    # ELF & binary loader
 ├── cmake/

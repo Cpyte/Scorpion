@@ -4,10 +4,10 @@
 #include "console.h"
 #include "scorpion.h"
 
-#define UART_BASE ((volatile uint8_t *)0x10000000)
-#define UART_THR  0
-#define UART_LSR  5
-#define UART_LSR_THRE (1u << 5)
+#define UART_BASE ((volatile uint8_t *)0x40070000)
+#define UART_DR   0x000
+#define UART_FR   0x018
+#define UART_FR_TXFF (1u << 5)
 
 void console_init(void)
 {
@@ -19,10 +19,10 @@ static void uart_putchar(char c)
         uart_putchar('\r');
     }
 
-    while (!(*(UART_BASE + UART_LSR) & UART_LSR_THRE)) {
+    while ((*(volatile uint16_t *)(UART_BASE + UART_FR) & UART_FR_TXFF)) {
     }
 
-    *(UART_BASE + UART_THR) = (uint8_t)c;
+    *(volatile uint8_t *)(UART_BASE + UART_DR) = (uint8_t)c;
 }
 
 void console_putchar(char c)

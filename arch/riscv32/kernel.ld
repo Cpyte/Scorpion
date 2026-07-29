@@ -3,7 +3,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    SRAM (rwx) : ORIGIN = 0x20000000, LENGTH = 512K
+    SRAM (rwx) : ORIGIN = 0x20000000, LENGTH = 520K
 }
 
 SECTIONS
@@ -39,9 +39,12 @@ SECTIONS
         _bss_end = .;
     } > SRAM
 
+    . = ALIGN(4096);
+    _heap_start = .;
+    _heap_end = ORIGIN(SRAM) + LENGTH(SRAM) - 16384;
+    __heap_start = _heap_start;
+    __heap_end = _heap_end;
     _stack_top = ORIGIN(SRAM) + LENGTH(SRAM);
-    _heap_start = ADDR(.bss) + SIZEOF(.bss);
-    _heap_end = ORIGIN(SRAM) + LENGTH(SRAM) - 16K;
 
     _flash_data = LOADADDR(.data);
 }

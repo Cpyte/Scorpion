@@ -5,7 +5,11 @@
 #define MAX_PROC 5
 #define BUDDY_STATE_SPLIT  2
 
-static uint8_t heap[HEAP_SIZE];
+extern uint8_t __heap_start[];
+extern uint8_t __heap_end[];
+
+static uint8_t *heap;
+static size_t heap_size;
 static size_t heap_offset = 0;
 static BlockHeader *free_blocks = NULL;
 static spinlock_t allocator_lock = { .locked = false };
@@ -43,7 +47,7 @@ static void *bump_alloc(size_t size) {
 
     const size_t aligned_offset = ALIGN_UP(heap_offset, alignof(max_align_t));
 
-    if (aligned_offset > HEAP_SIZE || total > HEAP_SIZE - aligned_offset) {
+    if (aligned_offset > heap_size || total > heap_size - aligned_offset) {
         return NULL;
     }
 
@@ -95,7 +99,7 @@ static void free_mem(void *ptr) {
         (BlockHeader *)((uint8_t *)ptr - ALLOC_HEADER_SIZE);
 
     if ((uint8_t *)block < heap ||
-        (uint8_t *)block >= heap + HEAP_SIZE) {
+        (uint8_t *)block >= heap + heap_size) {
         return;
     }
 
@@ -176,7 +180,7 @@ static void buddy_init(void) {
         free_lists[i] = NULL;
     }
 
-    total_buddy_pages = HEAP_SIZE / PAGE_SIZE;
+    total_buddy_pages = heap_size / PAGE_SIZE;
     max_buddy_order = ceil_log2_size(total_buddy_pages);
     if (max_buddy_order > MAX_ORDER) {
         max_buddy_order = MAX_ORDER;
@@ -210,6 +214,8 @@ static void buddy_init(void) {
 }
 
 void alloc_init(void) {
+    heap = __heap_start;
+    heap_size = (size_t)(__heap_end - __heap_start);
     spinlock_init(&allocator_lock);
     buddy_init();
 }
@@ -244,12 +250,24 @@ static void *buddy_alloc(const size_t size) {
     return NULL;
 }
 
+void *alloc_(const size_t size) {
+    if (size == 0) {
+        return NULL;
+    }
+
+    if (size >= PAGE_SIZE) {
+        return buddy_alloc(size);
+    }
+
+    return list_alloc(size);
+}
+
 static void buddy_free(void *ptr) {
     if (ptr == NULL) {
         return;
     }
 
-    if ((uint8_t *)ptr < heap || (uint8_t *)ptr >= heap + HEAP_SIZE) {
+    if ((uint8_t *)ptr < heap || (uint8_t *)ptr >= heap + heap_size) {
         return;
     }
 
@@ -297,24 +315,12 @@ static void buddy_free(void *ptr) {
     spinlock_unlock(&buddy_lock);
 }
 
-void *alloc_(const size_t size) {
-    if (size == 0) {
-        return NULL;
-    }
-
-    if (size >= PAGE_SIZE) {
-        return buddy_alloc(size);
-    }
-
-    return list_alloc(size);
-}
-
 void free_(void *ptr) {
     if (ptr == NULL) {
         return;
     }
 
-    if ((uint8_t *)ptr < heap || (uint8_t *)ptr >= heap + HEAP_SIZE) {
+    if ((uint8_t *)ptr < heap || (uint8_t *)ptr >= heap + heap_size) {
         return;
     }
 
