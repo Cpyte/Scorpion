@@ -1,0 +1,9 @@
+cmake-build-*/
+build*/
+*.o
+*.elf
+*.bin
+*.map
+*.swp
+*.swo
+.DS_Store
