@@ -211,7 +211,5 @@ void log_error(const char *fmt, ...);
 void __attribute__((noreturn)) panic(const char *fmt, ...);
 
 Process *process_create(void (*entry)(void *), void *arg);
-int process_load_elf(const void *elf_data, Process *proc);
-int process_load_binary(const void *data, size_t size, void (*entry)(void *), Process *proc);
 
 #endif

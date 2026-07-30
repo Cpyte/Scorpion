@@ -3,6 +3,7 @@
 #include "driver.h"
 #include "flash.h"
 #include "fuse.h"
+#include "loader.h"
 #include "scorpion.h"
 
 static void test_process(void *argument)
@@ -57,6 +58,9 @@ static void kernel_main(void)
 
     fuse_init();
     log_info("FUSE filesystem ready");
+
+    loader_init();
+    log_info("executable loader ready");
 
     stage_pool_init(8, 512);
     log_info("stage pool ready");

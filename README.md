@@ -29,9 +29,9 @@ with no external library dependencies.
     - [5. Trap \& Syscall Handler (`trap.c`, `trap.S`)](#5-trap--syscall-handler-trapc-traps)
     - [6. UART Console (`console.c`)](#6-uart-console-consolec)
     - [7. Driver Framework (`driver.c`)](#7-driver-framework-driverc)
-    - [8. Emulated Flash (`flash.c`)](#8-emulated-flash-flashc)
+    - [8. Flash Storage (`flash.c`)](#8-flash-storage-flashc)
     - [9. FUSE Filesystem (`fuse.c`)](#9-fuse-filesystem-fusec)
-    - [10. ELF \& Binary Loader (`loader.c`)](#10-elf--binary-loader-loaderc)
+    - [10. Executable Loader (`loader.c`)](#10-executable-loader-loaderc)
     - [11. ABI (`abi/scorpion.h`)](#11-abi-abiscorpionh)
   - [RP2350 Platform Details](#rp2350-platform-details)
   - [Project Structure](#project-structure)
@@ -78,8 +78,9 @@ with no external library dependencies.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> **Note:** Only the RP2350 RISC-V build target is currently supported.
-> Other microcontroller targets are planned for a future release.
+> **Note:** Currently only the Raspberry Pi Pico 2 (RP2350 RISC-V) is
+> supported. Support for other microcontrollers and architectures is planned
+> for future releases.
 
 Scorpion is a **cooperative single-address-space** kernel:
 - All code runs in machine mode (M-mode); there is no separate supervisor mode.
@@ -88,8 +89,8 @@ Scorpion is a **cooperative single-address-space** kernel:
 - The scheduler is priority-ordered round-robin; a higher-priority process
   runs before a lower-priority one, and the idle process (lowest priority)
   executes `wfi` when nothing else is ready.
-- The ELF loader maps `PT_LOAD` segments into the flat address space and jumps
-  to the entry point. There is no virtual memory.
+- Executables are loaded through a pluggable format interface; built-in
+  loaders include ELF and raw binary. There is no virtual memory.
 
 ---
 
@@ -205,10 +206,10 @@ Reset vector
                ├─ trap_init()       → set mtvec to trap_vector
                ├─ flash_init()      → locate bootrom flash routines
                ├─ fuse_init()       → mount / format FUSE
-              ├─ stage_pool_init() → pre-allocate I/O buffers
-              ├─ process_create()  → create test process
-              ├─ scheduler_init()  → create idle process + scheduler context
-              └─ scheduler_start() → enter scheduler (never returns)
+               ├─ stage_pool_init() → pre-allocate I/O buffers
+               ├─ load_test_exec()  → load test program (custom format)
+               ├─ scheduler_init()  → create idle process + scheduler context
+               └─ scheduler_start() → enter scheduler (never returns)
 ```
 
 ---
@@ -348,13 +349,20 @@ A simple flat filesystem layered on the QSPI flash:
 - **Operations**: `fuse_open`, `fuse_close`, `fuse_read`, `fuse_write`, `fuse_list`.
 - Auto-formats the flash if no valid superblock is found.
 
-### 10. ELF & Binary Loader (`loader.c`)
+### 10. Executable Loader (`loader.c`)
 
-- `process_create(entry, arg)` — allocates a `Process` struct for a C function.
-- `process_load_elf(elf_data, proc)` — validates a 32-bit RISC-V ELF header,
-  loads `PT_LOAD` segments into heap-allocated memory, sets `PC` = ELF entry.
-- `process_load_binary(data, size, entry, proc)` — loads a flat binary into
-  heap memory with a specified entry point.
+An extensible, pluggable executable loader:
+
+- `loader_register_format(format)` — register a loader for a custom executable
+  format (identified by magic bytes or name string).
+- `loader_load(data, size, proc)` — dispatch to the appropriate format handler
+  based on the input data.
+- Built-in format handlers:
+  - **ELF** — validates a 32-bit RISC-V ELF header, loads `PT_LOAD` segments
+    into heap-allocated memory, sets `PC` = ELF entry point.
+  - **Raw binary** — loads a flat binary with a specified entry address.
+- `process_create(entry, arg)` — allocates and initialises a `Process` struct
+  for a given entry function.
 
 ### 11. ABI (`abi/scorpion.h`)
 
@@ -406,7 +414,7 @@ bit-manipulation instructions.
 ├── driver.c / driver.h          # Driver registration framework + stage buffers
 ├── flash.c / flash.h            # QSPI flash driver (bootrom + XIP)
 ├── fuse.c / fuse.h              # FUSE filesystem on flash
-├── loader.c                    # ELF & binary loader
+├── loader.c / loader.h          # Pluggable executable loader (ELF, binary, custom)
 ├── cmake/
 │   └── riscv32-toolchain.cmake   # Standalone toolchain file (reference)
 ├── arch/
