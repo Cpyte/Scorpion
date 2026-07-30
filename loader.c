@@ -75,7 +75,7 @@ static int elf_load(const void *data, size_t size, Process *proc)
     }
     if (total_mem == 0) return -1;
 
-    uint8_t *base = alloc_(total_mem);
+    uint8_t *base = ualloc_(total_mem);
     if (base == NULL) return -1;
 
     proc->alloc_base = (uintptr_t)base;
@@ -118,7 +118,7 @@ static int elf_load(const void *data, size_t size, Process *proc)
     proc->context.pc = ehdr->entry;
     proc->context.ra = 0;
     proc->context.sp = ((uintptr_t)base + total_mem) & ~(uintptr_t)0xF;
-    proc->context.mstatus = 0x1808u;
+    proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
     for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
     proc->context.gp = 0;
     proc->context.tp = 0;
@@ -153,7 +153,7 @@ static int sef_load(const void *data, size_t size, Process *proc)
     }
     if (total == 0) return -1;
 
-    uint8_t *base = alloc_(total);
+    uint8_t *base = ualloc_(total);
     if (base == NULL) return -1;
 
     proc->alloc_base = (uintptr_t)base;
@@ -169,17 +169,17 @@ static int sef_load(const void *data, size_t size, Process *proc)
         uint8_t *dest = base + seg->vaddr;
 
         if (seg->vaddr + seg->size > total) {
-            free_(base);
+            ufree_(base);
             return -1;
         }
 
         if (seg->type == SEG_TEXT) {
-            if (seg->offset + seg->size > size) { free_(base); return -1; }
+            if (seg->offset + seg->size > size) { ufree_(base); return -1; }
             memcpy(dest, (const uint8_t *)data + seg->offset, seg->size);
             proc->text_base = (uintptr_t)dest;
             proc->text_size = seg->size;
         } else if (seg->type == SEG_DATA) {
-            if (seg->offset + seg->size > size) { free_(base); return -1; }
+            if (seg->offset + seg->size > size) { ufree_(base); return -1; }
             memcpy(dest, (const uint8_t *)data + seg->offset, seg->size);
             proc->data_base = (uintptr_t)dest;
             proc->data_size = seg->size;
@@ -200,30 +200,22 @@ static int sef_load(const void *data, size_t size, Process *proc)
     for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
     proc->context.ra = 0;
     proc->context.tp = 0;
-    proc->context.mstatus = 0x1808u;
 
     if (hdr->flags & SEF_FLAG_PRIV_CONTROLLER) {
         proc->privilege = PRIV_CONTROLLER;
     } else {
         proc->privilege = PRIV_USER;
     }
+    proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
 
     proc->state = PROCESS_READY;
     proc->context_initialized = true;
     return 0;
 }
 
-static int bin_probe(const void *data, size_t size)
-{
-    if (size < 4) return -1;
-    uint32_t magic = *(const uint32_t *)data;
-    if (magic == ELF_MAGIC || magic == SEF_MAGIC) return -1;
-    return (size > 0) ? 0 : -1;
-}
-
 static int bin_load(const void *data, size_t size, Process *proc)
 {
-    uint8_t *copy = alloc_(size);
+    uint8_t *copy = ualloc_(size);
     if (copy == NULL) return -1;
 
     memcpy(copy, data, size);
@@ -247,11 +239,7 @@ static const LoaderFormat elf_format = {
     .load = elf_load,
 };
 
-static const LoaderFormat binary_format = {
-    .name = "BIN",
-    .probe = bin_probe,
-    .load = bin_load,
-};
+/* bin_load is not registered as a general format — use process_load_binary() */
 
 int loader_register_format(const LoaderFormat *fmt)
 {
@@ -276,7 +264,6 @@ void loader_init(void)
 {
     loader_register_format(&sef_format);
     loader_register_format(&elf_format);
-    loader_register_format(&binary_format);
 }
 
 int process_load_elf(const void *elf_data, size_t elf_size, Process *proc)
@@ -292,12 +279,10 @@ int process_load_binary(const void *data, size_t size,
         proc->context.pc = entry_addr;
         proc->context.ra = 0;
         proc->context.sp = ((uintptr_t)proc->text_base + proc->text_size) & ~(uintptr_t)0xF;
-        proc->context.mstatus = 0x1808u;
+        proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
         for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
         proc->context.gp = 0;
         proc->context.tp = 0;
-        proc->state = PROCESS_READY;
-        proc->context_initialized = true;
     }
     return ret;
 }

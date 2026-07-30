@@ -41,9 +41,11 @@ SECTIONS
 
     . = ALIGN(4096);
     _heap_start = .;
-    _heap_end = ORIGIN(SRAM) + LENGTH(SRAM) - 16384;
+    _heap_end = ORIGIN(SRAM) + LENGTH(SRAM) - 16384 - 256K;
     __heap_start = _heap_start;
     __heap_end = _heap_end;
+    _user_arena_start = _heap_end;
+    _user_arena_end = _heap_end + 256K;
     _stack_top = ORIGIN(SRAM) + LENGTH(SRAM);
 
     _flash_data = LOADADDR(.data);

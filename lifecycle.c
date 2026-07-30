@@ -214,9 +214,9 @@ int process_terminate(Process *proc)
     proc->state = PROCESS_TERMINATED;
 
     if (proc->alloc_base)
-        free_((void *)proc->alloc_base);
+        ufree_((void *)proc->alloc_base);
     if (proc->stack_base)
-        free_(proc->stack_base);
+        ufree_(proc->stack_base);
 
     proc->alloc_base = 0;
     proc->text_base = 0;

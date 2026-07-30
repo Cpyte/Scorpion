@@ -26,13 +26,24 @@ static void process_trampoline(void)
 
     process_exit();
 
-    /*
-     * process_exit() should not return.
-     * If it does, the process has nowhere valid to continue.
-     */
     for (;;) {
         __asm__ volatile ("wfi");
     }
+}
+
+static void init_context_regs(Process *process, uintptr_t pc, uintptr_t sp,
+                               uint32_t mstatus)
+{
+    process->context.pc = pc;
+    process->context.ra = 0;
+    process->context.sp = sp;
+    process->context.gp = 0;
+    process->context.tp = 0;
+    for (unsigned i = 0; i < 12; i++)
+        process->context.s[i] = 0;
+    process->context.mstatus = mstatus;
+    process->state = PROCESS_READY;
+    process->context_initialized = true;
 }
 
 void process_init_context(Process *process)
@@ -46,20 +57,21 @@ void process_init_context(Process *process)
 
     stack_top &= ~(uintptr_t)0xF;
 
-    process->context.pc = (uintptr_t)process_trampoline;
-    process->context.ra = 0;
-    process->context.sp = stack_top;
+    init_context_regs(process, (uintptr_t)process_trampoline,
+                      stack_top, 0x1808u);
+}
 
-    process->context.gp = 0;
-    process->context.tp = 0;
+void process_init_user_context(Process *process, uintptr_t pc, uintptr_t sp)
+{
+    process->stack_size = PROCESS_STACK_SIZE;
+    process->stack_base = ualloc_(process->stack_size);
 
-    for (unsigned i = 0; i < 12; i++) {
-        process->context.s[i] = 0;
-    }
+    uintptr_t user_stack_top =
+        (uintptr_t)process->stack_base + process->stack_size;
+    user_stack_top &= ~(uintptr_t)0xF;
 
-    process->context.mstatus = 0x1808u;
+    if (sp == 0) sp = user_stack_top;
 
-    process->state = PROCESS_READY;
-    process->context_initialized = true;
+    init_context_regs(process, pc, sp, 0x0088u);
 }
 

@@ -203,9 +203,36 @@ void trap_handler(RiscVTrapFrame *frame)
         }
         break;
 
-    default:
-        panic("trap: unhandled mcause=%d mepc=%08x",
-              frame->mcause, frame->mepc);
+    default: {
+        const unsigned core = current_core_id();
+        Process *proc = current_process[core];
+        if (proc != NULL && (frame->mstatus & 0x1800u) == 0) {
+            log_warn("user fault pid=%u mcause=%u mepc=%08x",
+                     proc->pid, frame->mcause, frame->mepc);
+            frame->mepc += 4;
+            proc->state = PROCESS_TERMINATED;
+            current_process[core] = NULL;
+            context_switch(&proc->context, &scheduler[core].context);
+        } else {
+            panic("trap: unhandled mcause=%d mepc=%08x",
+                  frame->mcause, frame->mepc);
+        }
         break;
     }
+    }
+}
+
+extern uint8_t _user_arena_start[];
+extern uint8_t _user_arena_end[];
+
+void pmp_init(void)
+{
+    uint32_t addr0 = (uint32_t)_user_arena_start >> 2;
+    uint32_t addr1 = (uint32_t)_user_arena_end >> 2;
+    uint32_t cfg0 = PMP_CFG_TOR;
+    uint32_t cfg1 = PMP_CFG_TOR | PMP_CFG_RWX;
+
+    __asm__ volatile ("csrw pmpaddr0, %0" : : "r"(addr0));
+    __asm__ volatile ("csrw pmpaddr1, %0" : : "r"(addr1));
+    __asm__ volatile ("csrw pmpcfg0, %0" : : "r"((cfg1 << 8) | cfg0));
 }

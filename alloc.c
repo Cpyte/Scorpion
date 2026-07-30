@@ -213,6 +213,97 @@ static void buddy_init(void) {
     }
 }
 
+extern uint8_t _user_arena_start[];
+extern uint8_t _user_arena_end[];
+
+static uint8_t *user_base;
+static size_t user_size;
+static size_t user_offset;
+static BlockHeader *user_free;
+static spinlock_t user_lock = { .locked = false };
+
+void user_arena_init(void)
+{
+    user_base = _user_arena_start;
+    user_size = (size_t)(_user_arena_end - _user_arena_start);
+    user_offset = 0;
+    user_free = NULL;
+    spinlock_init(&user_lock);
+}
+
+void *ualloc_(size_t size)
+{
+    if (size == 0) return NULL;
+
+    size = ALIGN_UP(size, alignof(max_align_t));
+
+    spinlock_lock(&user_lock);
+
+    BlockHeader **prev = &user_free;
+    while (*prev) {
+        BlockHeader *block = *prev;
+        if (block->size >= size) {
+            size_t remaining = block->size - size;
+            if (remaining >= ALLOC_HEADER_SIZE + MIN_ALLOC_SIZE) {
+                uint8_t *data = (uint8_t *)block + ALLOC_HEADER_SIZE;
+                BlockHeader *rem = (BlockHeader *)(data + size);
+                rem->size = remaining - ALLOC_HEADER_SIZE;
+                rem->next = block->next;
+                *prev = rem;
+            } else {
+                *prev = block->next;
+            }
+            block->size = size;
+            spinlock_unlock(&user_lock);
+            return (void *)((uint8_t *)block + ALLOC_HEADER_SIZE);
+        }
+        prev = &block->next;
+    }
+
+    if (user_offset + size > user_size) {
+        spinlock_unlock(&user_lock);
+        return NULL;
+    }
+
+    BlockHeader *hdr = (BlockHeader *)(user_base + user_offset);
+    hdr->size = size;
+    hdr->next = NULL;
+    user_offset += ALLOC_HEADER_SIZE + size;
+
+    spinlock_unlock(&user_lock);
+    return (void *)((uint8_t *)hdr + ALLOC_HEADER_SIZE);
+}
+
+void ufree_(void *ptr)
+{
+    if (ptr == NULL) return;
+    if ((uint8_t *)ptr < user_base ||
+        (uint8_t *)ptr >= user_base + user_size) return;
+
+    BlockHeader *block = (BlockHeader *)((uint8_t *)ptr - ALLOC_HEADER_SIZE);
+
+    spinlock_lock(&user_lock);
+
+    BlockHeader **prev = &user_free;
+    while (*prev && *prev < block) prev = &(*prev)->next;
+    block->next = *prev;
+    *prev = block;
+
+    prev = &user_free;
+    while (*prev && (*prev)->next) {
+        BlockHeader *cur = *prev;
+        uint8_t *end = (uint8_t *)cur + ALLOC_HEADER_SIZE + cur->size;
+        if (end == (uint8_t *)cur->next) {
+            cur->size += ALLOC_HEADER_SIZE + cur->next->size;
+            cur->next = cur->next->next;
+        } else {
+            prev = &cur->next;
+        }
+    }
+
+    spinlock_unlock(&user_lock);
+}
+
 void alloc_init(void) {
     heap = __heap_start;
     heap_size = (size_t)(__heap_end - __heap_start);

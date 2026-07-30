@@ -85,7 +85,7 @@ with no external library dependencies.
 > for future releases.
 
 Scorpion is a **cooperative single-address-space** kernel:
-- All code runs in machine mode (M-mode); there is no separate supervisor mode.
+- Kernel code runs in machine mode (M-mode); user processes run in user mode (U-mode).
 - Processes (threads) share a single address space and yield cooperatively via
   the `ecall` instruction (syscall 0).
 - A **machine timer** (RISC-V platform timer in the SIO block) fires periodic
@@ -96,6 +96,9 @@ Scorpion is a **cooperative single-address-space** kernel:
   executes `wfi` when nothing else is ready.
 - Executables are loaded through a pluggable format interface; built-in
   loaders include **SEF** (Scorpion's native format), ELF, and flat binary.
+- **PMP** (Physical Memory Protection) restricts U-mode access to a dedicated
+  user arena. Kernel memory, peripheral MMIO, and flash are inaccessible to user
+  code, enforced via RISC-V PMP TOR entries at boot.
   There is no virtual memory.
 
 ---
@@ -211,8 +214,10 @@ Reset vector
               ▼
            kernel_main()
                │
-               ├─ alloc_init()        → init bump + buddy allocators
-               ├─ trap_init()         → set mtvec to trap_vector
+                ├─ alloc_init()        → init bump + buddy allocators
+                ├─ user_arena_init()   → init user memory region
+                ├─ pmp_init()          → configure PMP (U-mode protection)
+                ├─ trap_init()         → set mtvec to trap_vector
                ├─ flash_init()        → locate bootrom flash routines
                ├─ fuse_init()         → mount / format FUSE
                ├─ loader_init()       → register SEF, ELF, binary format handlers
@@ -310,7 +315,8 @@ machine-level interrupt 7.
 - Process stacks are 4 KB, allocated from the heap and 16-byte aligned.
 - The trampoline (`process_trampoline()`) calls the process entry function and
   invokes `process_exit()` on return.
-- New contexts initialise `mstatus = 0x1808` (MIE=1, MPP=3).
+- Kernel contexts initialise `mstatus = 0x1808` (MIE=1, MPP=3).
+  User contexts initialise `mstatus = 0x0088` (MIE=1, MPP=0).
 
 ### 6. Trap & Syscall Handler (`trap.c`, `trap.S`)
 
@@ -481,7 +487,7 @@ bit-manipulation instructions.
 ├── README.md                   # This file
 ├── scorpion.h                  # Master kernel header (types, IPC, scheduler API)
 ├── scorpion.h                   # Master kernel header (types, IPC, scheduler API, CSRs)
-├── sef.h                      # SEF executable format struct definitions
+├── sef.h                      # SEF executable format struct definitions + PMP constants
 ├── main.c                       # Kernel entry: boots subsystems, spawns init, starts scheduler
 ├── alloc.c / alloc.h             # Heap allocator (bump + free-list + buddy)
 ├── palloc.c                     # Physical page allocator (bitmap-based)

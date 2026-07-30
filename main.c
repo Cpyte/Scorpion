@@ -67,6 +67,12 @@ static void kernel_main(void)
     alloc_init();
     log_info("allocator initialized");
 
+    user_arena_init();
+    log_info("user arena initialized");
+
+    pmp_init();
+    log_info("PMP configured (U-mode protection enabled)");
+
     trap_init();
     log_info("trap handler installed");
 

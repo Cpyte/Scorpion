@@ -226,6 +226,12 @@ void log_warn(const char *fmt, ...);
 void log_error(const char *fmt, ...);
 void __attribute__((noreturn)) panic(const char *fmt, ...);
 
+void user_arena_init(void);
+void *ualloc_(size_t size);
+void ufree_(void *ptr);
+
+void pmp_init(void);
+
 Process *process_alloc(void);
 Process *process_create(void (*entry)(void *), void *arg);
 
@@ -252,9 +258,23 @@ void timer_irq(void);
 #define CSR_MCAUSE  0x342
 #define CSR_MIP     0x344
 
-#define MCAUSE_TIMER_IRQ  (0x80000000u | 7u)
-#define MCAUSE_ECALL_U    8u
-#define MCAUSE_ECALL_M    11u
+#define MCAUSE_TIMER_IRQ    (0x80000000u | 7u)
+#define MCAUSE_ECALL_U      8u
+#define MCAUSE_ECALL_M      11u
+#define MCAUSE_INSN_FAULT   1u
+#define MCAUSE_LOAD_FAULT   5u
+#define MCAUSE_STORE_FAULT  7u
+#define MCAUSE_INSN_PF      12u
+#define MCAUSE_LOAD_PF      13u
+#define MCAUSE_STORE_PF     15u
+
+#define PMP_CFG_OFF   0x00u
+#define PMP_CFG_TOR   0x18u
+#define PMP_CFG_NAPOT 0x1Cu
+#define PMP_CFG_R     0x04u
+#define PMP_CFG_W     0x02u
+#define PMP_CFG_X     0x01u
+#define PMP_CFG_RWX   (PMP_CFG_R | PMP_CFG_W | PMP_CFG_X)
 
 #define csr_read(csr) ({ \
     uint32_t _v; \

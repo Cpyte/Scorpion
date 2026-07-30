@@ -4,11 +4,14 @@ Scorpion uses a pluggable loader architecture (`loader.c`). The
 `loader_load(data, size, proc)` function iterates registered format handlers
 and dispatches to the first one whose `probe` routine returns success.
 
-Three built-in formats are registered (in order):
+Two built-in formats are registered (in order):
 
 1. **SEF** — Scorpion's native format
 2. **ELF** — 32-bit RISC-V ELF
-3. **BIN** — flat binary (fallback)
+
+A third format, **BIN** (flat binary), is available only via the
+`process_load_binary()` convenience function; it is **not** registered as a
+general format handler since it cannot determine an entry point from the data.
 
 ---
 
