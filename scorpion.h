@@ -274,6 +274,7 @@ void timer_irq(void);
 #define PMP_CFG_R     0x04u
 #define PMP_CFG_W     0x02u
 #define PMP_CFG_X     0x01u
+#define PMP_CFG_L     0x80u
 #define PMP_CFG_RWX   (PMP_CFG_R | PMP_CFG_W | PMP_CFG_X)
 
 #define csr_read(csr) ({ \

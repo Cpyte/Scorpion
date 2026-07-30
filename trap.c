@@ -21,6 +21,18 @@
 
 extern void ecall_trigger(void);
 
+extern uint8_t _user_arena_start[];
+extern uint8_t _user_arena_end[];
+
+static bool is_user_range(const Process *proc, const void *ptr, size_t size)
+{
+    if (proc == NULL || proc->privilege != PRIV_USER) return true;
+    const uint8_t *p = (const uint8_t *)ptr;
+    return p >= _user_arena_start &&
+           p + size >= p &&
+           p + size <= (const uint8_t *)_user_arena_end;
+}
+
 static const char *syscall_name(unsigned n)
 {
     static const char *names[] = {
@@ -59,8 +71,10 @@ void trap_handler(RiscVTrapFrame *frame)
         timer_irq();
         break;
 
-    case MCAUSE_ECALL_M:
+    case MCAUSE_ECALL_U:
+    case MCAUSE_ECALL_M: {
         sysno = frame->a[7];
+        Process *cur = current_process[core];
 
         switch (sysno) {
         case SYS_YIELD:
@@ -81,24 +95,36 @@ void trap_handler(RiscVTrapFrame *frame)
             break;
         }
 
-        case SYS_PUTC:
-            console_write((const char *)frame->a[0], frame->a[1]);
+        case SYS_PUTC: {
+            const void *buf = (const void *)frame->a[0];
+            size_t len = frame->a[1];
+            if (!is_user_range(cur, buf, len)) { frame->a[0] = -1; break; }
+            console_write((const char *)buf, len);
             break;
+        }
 
-        case SYS_OPEN:
-            frame->a[0] = (uintptr_t)fuse_open(
-                (const char *)frame->a[0], frame->a[1]);
+        case SYS_OPEN: {
+            const char *path = (const char *)frame->a[0];
+            if (!is_user_range(cur, path, 1)) { frame->a[0] = -1; break; }
+            frame->a[0] = (uintptr_t)fuse_open(path, frame->a[1]);
             break;
+        }
 
-        case SYS_READ:
-            frame->a[0] = (uintptr_t)fuse_read(
-                (int)frame->a[0], (void *)frame->a[1], frame->a[2]);
+        case SYS_READ: {
+            void *buf = (void *)frame->a[1];
+            size_t rlen = frame->a[2];
+            if (!is_user_range(cur, buf, rlen)) { frame->a[0] = -1; break; }
+            frame->a[0] = (uintptr_t)fuse_read((int)frame->a[0], buf, rlen);
             break;
+        }
 
-        case SYS_WRITE:
-            frame->a[0] = (uintptr_t)fuse_write(
-                (int)frame->a[0], (const void *)frame->a[1], frame->a[2]);
+        case SYS_WRITE: {
+            const void *buf = (const void *)frame->a[1];
+            size_t wlen = frame->a[2];
+            if (!is_user_range(cur, buf, wlen)) { frame->a[0] = -1; break; }
+            frame->a[0] = (uintptr_t)fuse_write((int)frame->a[0], buf, wlen);
             break;
+        }
 
         case SYS_CLOSE:
             frame->a[0] = (uintptr_t)fuse_close((int)frame->a[0]);
@@ -108,24 +134,33 @@ void trap_handler(RiscVTrapFrame *frame)
             sleep_process(frame->a[0]);
             break;
 
-        case SYS_SEND:
+        case SYS_SEND: {
+            const void *msg = (const void *)frame->a[2];
+            size_t msglen = frame->a[3];
+            if (!is_user_range(cur, msg, msglen)) { frame->a[0] = -1; break; }
             frame->a[0] = (uintptr_t)send_message(
                 process_by_pid(frame->a[0]),
-                frame->a[1],
-                (const void *)frame->a[2],
-                frame->a[3]);
+                frame->a[1], msg, msglen);
             break;
+        }
 
-        case SYS_RECV:
+        case SYS_RECV: {
+            uint32_t *type_out = (uint32_t *)frame->a[0];
+            void *buf = (void *)frame->a[1];
+            size_t rlen = frame->a[2];
+            uint16_t *sender_out = (uint16_t *)frame->a[3];
+            if (!is_user_range(cur, type_out, sizeof(*type_out)) ||
+                !is_user_range(cur, buf, rlen) ||
+                !is_user_range(cur, sender_out, sizeof(*sender_out))) {
+                frame->a[0] = (uintptr_t)-1;
+                break;
+            }
             frame->a[0] = (uintptr_t)receive_message(
-                (uint32_t *)frame->a[0],
-                (void *)frame->a[1],
-                frame->a[2],
-                (uint16_t *)frame->a[3]);
+                type_out, buf, rlen, sender_out);
             break;
+        }
 
         case SYS_SPAWN: {
-            Process *cur = current_process[core];
             if (cur == NULL || cur->privilege > PRIV_CONTROLLER) {
                 frame->a[0] = (uintptr_t)-1;
                 break;
@@ -175,7 +210,6 @@ void trap_handler(RiscVTrapFrame *frame)
         }
 
         case SYS_TERMINATE: {
-            Process *cur = current_process[core];
             if (cur == NULL || cur->privilege > PRIV_CONTROLLER) {
                 frame->a[0] = (uintptr_t)-1;
                 break;
@@ -198,10 +232,11 @@ void trap_handler(RiscVTrapFrame *frame)
         default:
             log_error("syscall: unhandled %s (%u) from pid=%u",
                       syscall_name(sysno), sysno,
-                      current_process[core] ? current_process[core]->pid : 0);
+                      cur ? cur->pid : 0);
             break;
         }
         break;
+        }
 
     default: {
         const unsigned core = current_core_id();
@@ -222,15 +257,19 @@ void trap_handler(RiscVTrapFrame *frame)
     }
 }
 
-extern uint8_t _user_arena_start[];
-extern uint8_t _user_arena_end[];
-
 void pmp_init(void)
 {
-    uint32_t addr0 = (uint32_t)_user_arena_start >> 2;
-    uint32_t addr1 = (uint32_t)_user_arena_end >> 2;
+    uintptr_t arena_start = (uintptr_t)_user_arena_start;
+    uintptr_t arena_end   = (uintptr_t)_user_arena_end;
+
+    if ((arena_start & 3) || (arena_end & 3))
+        panic("pmp: user arena not 4-byte aligned (%08x–%08x)",
+              (unsigned)arena_start, (unsigned)arena_end);
+
+    uint32_t addr0 = (uint32_t)(arena_start >> 2);
+    uint32_t addr1 = (uint32_t)(arena_end >> 2);
     uint32_t cfg0 = PMP_CFG_TOR;
-    uint32_t cfg1 = PMP_CFG_TOR | PMP_CFG_RWX;
+    uint32_t cfg1 = PMP_CFG_TOR | PMP_CFG_RWX | PMP_CFG_L;
 
     __asm__ volatile ("csrw pmpaddr0, %0" : : "r"(addr0));
     __asm__ volatile ("csrw pmpaddr1, %0" : : "r"(addr1));

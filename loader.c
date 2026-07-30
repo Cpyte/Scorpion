@@ -93,7 +93,7 @@ static int elf_load(const void *data, size_t size, Process *proc)
 
         if (phdr[i].offset + phdr[i].filesz > size ||
             phdr[i].offset + phdr[i].filesz < phdr[i].offset) {
-            free_(base);
+            ufree_(base);
             return -1;
         }
 
