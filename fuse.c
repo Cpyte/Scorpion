@@ -160,6 +160,7 @@ int fuse_open(const char *name, unsigned mode)
     int idx;
 
     if (!fuse_ready) return -1;
+    if (name == NULL) return -1;
 
     idx = find_entry(name);
 

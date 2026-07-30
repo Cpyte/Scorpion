@@ -97,8 +97,11 @@ int flash_write(uint32_t block, const void *buf, size_t len)
 
     offset = block * FLASH_BLOCK_SIZE;
 
+    unsigned sector_start = (offset / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
+
     rom_connect_internal_flash();
     rom_flash_exit_xip();
+    rom_flash_range_erase(sector_start, FLASH_SECTOR_SIZE, FLASH_SECTOR_SIZE, 0x78);
     rom_flash_range_program(offset, (const uint8_t *)buf, len);
     rom_flash_flush_cache();
     rom_flash_enter_cmd_xip();

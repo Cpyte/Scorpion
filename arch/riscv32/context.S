@@ -29,6 +29,7 @@
 #define CTX_S9   56
 #define CTX_S10  60
 #define CTX_S11  64
+#define CTX_MSTATUS 68
 
     .section .text
     .global context_switch
@@ -77,8 +78,14 @@ context_switch:
     sw    s10, CTX_S10(a0)
     sw    s11, CTX_S11(a0)
 
+    csrr  t0, mstatus
+    sw    t0,  CTX_MSTATUS(a0)
+
 
 load_context:
+
+    lw    t0,  CTX_MSTATUS(a1)
+    csrw  mstatus, t0
 
     /*
      * Restore incoming process.

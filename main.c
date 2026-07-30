@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "alloc.h"
 #include "console.h"
 #include "driver.h"
@@ -6,45 +8,60 @@
 #include "loader.h"
 #include "scorpion.h"
 
-static void test_process(void *argument)
-{
-    unsigned count = 0;
-    int fd;
-    char buf[64];
+#define XIP_BASE            0x10000000u
+#define CTRL_FLASH_OFFSET   0x00010000u
+#define CTRL_XIP_ADDR       ((const uint8_t *)(XIP_BASE + CTRL_FLASH_OFFSET))
 
+extern char __heap_start;
+extern char __heap_end;
+
+static void init_process(void *argument)
+{
     (void)argument;
 
-    fd = fuse_open("/hello", FUSE_M_WRITE);
+    log_info("init: booting, will spawn controller");
 
-    if (fd >= 0) {
-        const char *msg = "Scorpion FUSE\n";
-        fuse_write(fd, msg, 14);
-        fuse_close(fd);
+    /* packrom.py placed [4-byte size][controller.sexec] at flash offset
+     * 0x10000.  The boot ROM loaded only the kernel to SRAM, so we read
+     * the controller via XIP. */
+    kernel_region.base = 0;
+    kernel_region.size = (uintptr_t)&__heap_start;
+    controller_region.base = 0;
+    controller_region.size = 0;
+
+    uint32_t ctrl_size;
+    const uint8_t *ctrl_data;
+    int pid;
+
+    ctrl_size = *(const uint32_t *)CTRL_XIP_ADDR;
+    ctrl_data = CTRL_XIP_ADDR + sizeof(ctrl_size);
+
+    __asm__ volatile (
+        "mv a0, %[data]\n"
+        "mv a1, %[size]\n"
+        "li a2, 1\n"
+        "li a7, 12\n"
+        "ecall\n"
+        "mv %[pid], a0\n"
+        : [pid] "=r" (pid)
+        : [data] "r" (ctrl_data),
+          [size] "r" (ctrl_size)
+        : "a0", "a1", "a2", "a7", "memory"
+    );
+
+    if (pid < 0) {
+        log_error("init: failed to spawn controller (%d)", pid);
+    } else {
+        log_info("init: spawned controller pid=%d", pid);
     }
 
     for (;;) {
-        log_info("test_process: iteration %u", count++);
-
-        fd = fuse_open("/hello", FUSE_M_READ);
-
-        if (fd >= 0) {
-            int n = fuse_read(fd, buf, sizeof(buf) - 1);
-            if (n > 0) {
-                buf[n] = '\0';
-                log_info("test_process: file says '%s'", buf);
-            }
-            fuse_close(fd);
-        }
-
-        fuse_list();
         yield();
     }
 }
 
 static void kernel_main(void)
 {
-    Process *proc;
-
     log_info("Scorpion kernel booting on RISC-V");
 
     alloc_init();
@@ -65,9 +82,13 @@ static void kernel_main(void)
     stage_pool_init(8, 512);
     log_info("stage pool ready");
 
-    proc = process_create(test_process, NULL);
-    add_process(proc, 10);
-    log_info("test process created");
+    timer_init();
+    log_info("timer initialized");
+
+    Process *init = process_create(init_process, NULL);
+    init->privilege = PRIV_CONTROLLER;
+    add_process(init, 1);
+    log_info("init process created (pid=%u)", init->pid);
 
     scheduler_init();
     log_info("scheduler initialized");

@@ -44,9 +44,6 @@ void process_init_context(Process *process)
         (uintptr_t)process->stack_base +
         process->stack_size;
 
-    /*
-     * RISC-V ABI stack alignment.
-     */
     stack_top &= ~(uintptr_t)0xF;
 
     process->context.pc = (uintptr_t)process_trampoline;
@@ -59,6 +56,8 @@ void process_init_context(Process *process)
     for (unsigned i = 0; i < 12; i++) {
         process->context.s[i] = 0;
     }
+
+    process->context.mstatus = 0x1808u;
 
     process->state = PROCESS_READY;
     process->context_initialized = true;

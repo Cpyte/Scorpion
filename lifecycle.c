@@ -84,6 +84,7 @@ void scheduler_init(void)
     scheduler[core].context.sp = stack_top;
     scheduler[core].context.gp = 0;
     scheduler[core].context.tp = 0;
+    scheduler[core].context.mstatus = 0x1808u;
 
     for (unsigned i = 0; i < 12; i++) {
         scheduler[core].context.s[i] = 0;
@@ -93,6 +94,7 @@ void scheduler_init(void)
 
     idle->pid = 0;
     idle->state = PROCESS_UNUSED;
+    idle->privilege = PRIV_KERNEL;
     idle->entry = idle_process;
     idle->argument = NULL;
     idle->next = NULL;
@@ -201,6 +203,131 @@ int killprocess(void)
     }
 
     return 1;
+}
+
+int process_terminate(Process *proc)
+{
+    if (proc == NULL || proc->state == PROCESS_UNUSED) return -1;
+    if (proc->privilege == PRIV_KERNEL) return -1;
+
+    proc->state = PROCESS_TERMINATED;
+
+    if (proc->text_base && proc->text_size)
+        free_((void *)proc->text_base);
+    if (proc->data_base && proc->data_size)
+        free_((void *)proc->data_base);
+    if (proc->bss_base && proc->bss_size)
+        free_((void *)proc->bss_base);
+    if (proc->stack_base && proc->stack_size)
+        free_(proc->stack_base);
+
+    proc->text_base = 0;
+    proc->text_size = 0;
+    proc->data_base = 0;
+    proc->data_size = 0;
+    proc->bss_base = 0;
+    proc->bss_size = 0;
+    proc->stack_base = NULL;
+    proc->stack_size = 0;
+
+    return 0;
+}
+
+int evict_lowest_priority(size_t min_freed)
+{
+    ProcessNode *best = NULL;
+    ProcessNode *p = queue.head;
+
+    while (p != NULL) {
+        Process *proc = p->process;
+        if (proc->privilege == PRIV_USER &&
+            proc->state != PROCESS_UNUSED &&
+            proc->state != PROCESS_TERMINATED) {
+            size_t proc_size = proc->text_size + proc->data_size +
+                               proc->bss_size + proc->stack_size;
+            if (proc_size >= min_freed) {
+                if (best == NULL || p->priority > best->priority) {
+                    best = p;
+                }
+            }
+        }
+        p = p->next;
+    }
+
+    if (best == NULL) return -1;
+
+    ProcessNode *prev = best->prev;
+    ProcessNode *next = best->next;
+    if (prev != NULL)
+        prev->next = next;
+    else
+        queue.head = next;
+    if (next != NULL)
+        next->prev = prev;
+    else
+        queue.tail = prev;
+
+    Process *victim = best->process;
+    log_info("evict: terminating pid=%u priority=%u",
+             victim->pid, best->priority);
+    process_terminate(victim);
+    free_(victim);
+    free_(best);
+    return 0;
+}
+
+#define SIO_BASE            0xd0000000u
+#define SIO_MTIME           0x1b0
+#define SIO_MTIMEH          0x1b4
+#define SIO_MTIMECMP        0x1b8
+#define SIO_MTIMECMPH       0x1bc
+
+#define TIMER_INTERVAL      1000000u
+
+static inline uint64_t timer_read(void)
+{
+    volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
+    uint32_t h0, l, h1;
+    do {
+        h0 = sio[SIO_MTIMEH / 4];
+        l  = sio[SIO_MTIME  / 4];
+        h1 = sio[SIO_MTIMEH / 4];
+    } while (h0 != h1);
+    return l | ((uint64_t)h1 << 32);
+}
+
+static inline void timer_set_cmp(uint64_t cmp)
+{
+    volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
+    sio[SIO_MTIMECMP / 4]  = 0xffffffffu;
+    sio[SIO_MTIMECMPH / 4] = (uint32_t)(cmp >> 32);
+    sio[SIO_MTIMECMP / 4]  = (uint32_t)(cmp & 0xffffffffu);
+}
+
+void timer_init(void)
+{
+    volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
+    sio[SIO_MTIME / 4] = 0;
+    sio[SIO_MTIMEH / 4] = 0;
+    sio[SIO_MTIME / 4] = 0;
+
+    timer_set_cmp(TIMER_INTERVAL);
+
+    uint32_t mie;
+    __asm__ volatile ("csrr %0, 0x304" : "=r"(mie));
+    mie |= 0x80u;
+    __asm__ volatile ("csrw 0x304, %0" : : "r"(mie));
+
+    sio[SIO_MTIME / 4] = 0;
+    sio[SIO_MTIMEH / 4] = 0;
+    sio[SIO_MTIME / 4] = 0;
+}
+
+void timer_irq(void)
+{
+    uint64_t now = timer_read();
+    timer_set_cmp(now + TIMER_INTERVAL);
+    yield();
 }
 
 void yield(void)

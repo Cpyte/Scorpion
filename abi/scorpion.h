@@ -1,18 +1,23 @@
 #ifndef SCORPION_ABI_H
 #define SCORPION_ABI_H
 
-#define SYS_YIELD  0
-#define SYS_EXIT   1
-#define SYS_BLOCK  2
-#define SYS_WAKE   3
-#define SYS_SLEEP  4
-#define SYS_SEND   5
-#define SYS_RECV   6
-#define SYS_OPEN   7
-#define SYS_READ   8
-#define SYS_WRITE  9
-#define SYS_CLOSE  10
-#define SYS_PUTC   11
+#include <stddef.h>
+#include <stdint.h>
+
+#define SYS_YIELD      0
+#define SYS_EXIT       1
+#define SYS_BLOCK      2
+#define SYS_WAKE       3
+#define SYS_SLEEP      4
+#define SYS_SEND       5
+#define SYS_RECV       6
+#define SYS_OPEN       7
+#define SYS_READ       8
+#define SYS_WRITE      9
+#define SYS_CLOSE     10
+#define SYS_PUTC      11
+#define SYS_SPAWN     12
+#define SYS_TERMINATE 13
 
 static inline void scorpion_yield(void)
 {
@@ -83,7 +88,7 @@ static inline int scorpion_open(const char *name, unsigned mode)
     register unsigned a1 asm("a1") = mode;
     register unsigned a7 asm("a7") = SYS_OPEN;
     __asm__ volatile ("ecall" : "+r"(a0) : "r"(a1), "r"(a7) : "memory");
-    return (int)(uintptr_t)a0;
+    return (int)(size_t)a0;
 }
 
 static inline int scorpion_read(int fd, void *buf, unsigned size)
@@ -112,6 +117,24 @@ static inline int scorpion_close(int fd)
     register unsigned a7 asm("a7") = SYS_CLOSE;
     __asm__ volatile ("ecall" : "+r"(a0) : "r"(a7) : "memory");
     return a0;
+}
+
+static inline int scorpion_spawn(const void *sexec_data, unsigned size, unsigned priority)
+{
+    register const void *a0 asm("a0") = sexec_data;
+    register unsigned a1 asm("a1") = size;
+    register unsigned a2 asm("a2") = priority;
+    register unsigned a7 asm("a7") = SYS_SPAWN;
+    __asm__ volatile ("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a7) : "memory");
+    return (int)(size_t)a0;
+}
+
+static inline int scorpion_terminate(unsigned pid)
+{
+    register unsigned a0 asm("a0") = pid;
+    register unsigned a7 asm("a7") = SYS_TERMINATE;
+    __asm__ volatile ("ecall" : "+r"(a0) : "r"(a7) : "memory");
+    return (int)a0;
 }
 
 #endif

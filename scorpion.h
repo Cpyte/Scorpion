@@ -100,6 +100,12 @@ const char *palloc_strerror(palloc_error_t error);
 #define PROCESS_STACK_SIZE 4096u
 
 typedef enum {
+    PRIV_KERNEL = 0,
+    PRIV_CONTROLLER = 1,
+    PRIV_USER = 2
+} PrivilegeLevel;
+
+typedef enum {
     PROCESS_UNUSED,
     PROCESS_READY,
     PROCESS_RUNNING,
@@ -114,11 +120,13 @@ typedef struct {
     uintptr_t gp;
     uintptr_t tp;
     uintptr_t s[12];
+    uintptr_t mstatus;
 } RiscVContext;
 
 typedef struct Process {
     uint32_t pid;
     ProcessState state;
+    PrivilegeLevel privilege;
     uint8_t *stack_base;
     size_t stack_size;
     void (*entry)(void *argument);
@@ -132,6 +140,12 @@ typedef struct Process {
     uint16_t msg_head;
     uint16_t msg_tail;
     uint16_t msg_count;
+    uintptr_t text_base;
+    size_t text_size;
+    uintptr_t data_base;
+    size_t data_size;
+    uintptr_t bss_base;
+    size_t bss_size;
 } Process;
 
 typedef struct {
@@ -211,5 +225,42 @@ void log_error(const char *fmt, ...);
 void __attribute__((noreturn)) panic(const char *fmt, ...);
 
 Process *process_create(void (*entry)(void *), void *arg);
+
+int process_terminate(Process *proc);
+
+typedef struct {
+    uintptr_t base;
+    size_t size;
+} MemoryRegion;
+
+extern MemoryRegion kernel_region;
+extern MemoryRegion controller_region;
+
+int evict_lowest_priority(size_t min_freed);
+
+void process_init(void);
+
+void timer_init(void);
+void timer_irq(void);
+
+#define CSR_MSTATUS 0x300
+#define CSR_MIE     0x304
+#define CSR_MEPC    0x341
+#define CSR_MCAUSE  0x342
+#define CSR_MIP     0x344
+
+#define MCAUSE_TIMER_IRQ  (0x80000000u | 7u)
+#define MCAUSE_ECALL_U    8u
+#define MCAUSE_ECALL_M    11u
+
+#define csr_read(csr) ({ \
+    uint32_t _v; \
+    __asm__ volatile ("csrr %0, " csr : "=r"(_v)); \
+    _v; \
+})
+
+#define csr_write(csr, val) ({ \
+    __asm__ volatile ("csrw " csr ", %0" : : "r"(val)); \
+})
 
 #endif

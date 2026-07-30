@@ -5,6 +5,7 @@
 #include "console.h"
 #include "loader.h"
 #include "scorpion.h"
+#include "sexec.h"
 
 #define ELF_MAGIC      0x464C457F
 #define ELF_32CLASS    1
@@ -44,6 +45,9 @@ typedef struct {
 static const LoaderFormat *formats[MAX_FORMATS];
 static unsigned format_count;
 
+MemoryRegion kernel_region;
+MemoryRegion controller_region;
+
 static int elf_probe(const void *data, size_t size)
 {
     (void)size;
@@ -61,27 +65,135 @@ static int elf_load(const void *data, size_t size, Process *proc)
 
     const Elf32Phdr *phdr = (const Elf32Phdr *)((const uint8_t *)data + ehdr->phoff);
 
+    size_t total_mem = 0;
+    for (unsigned i = 0; i < ehdr->phnum; i++) {
+        if (phdr[i].type != ELF_PT_LOAD) continue;
+        total_mem += phdr[i].memsz;
+    }
+    if (total_mem == 0) return -1;
+
+    uint8_t *base = alloc_(total_mem);
+    if (base == NULL) return -1;
+
+    proc->text_base = 0;
+    proc->text_size = 0;
+    proc->data_base = 0;
+    proc->data_size = 0;
+    proc->bss_base = 0;
+    proc->bss_size = 0;
+
+    size_t offset = 0;
     for (unsigned i = 0; i < ehdr->phnum; i++) {
         if (phdr[i].type != ELF_PT_LOAD) continue;
         if (phdr[i].memsz == 0) continue;
 
-        uint8_t *seg = alloc_(phdr[i].memsz);
-        if (seg == NULL) return -1;
-
+        uint8_t *seg = base + offset;
         if (phdr[i].filesz > 0)
             memcpy(seg, (const uint8_t *)data + phdr[i].offset, phdr[i].filesz);
         if (phdr[i].memsz > phdr[i].filesz)
             memset(seg + phdr[i].filesz, 0, phdr[i].memsz - phdr[i].filesz);
 
-        proc->stack_base = seg;
-        proc->stack_size = phdr[i].memsz;
-        break;
+        if (phdr[i].flags & 1) {
+            proc->text_base = (uintptr_t)seg;
+            proc->text_size = phdr[i].memsz;
+        }
+        if (phdr[i].flags & 2) {
+            proc->data_base = (uintptr_t)seg;
+            proc->data_size = phdr[i].memsz;
+        }
+
+        offset += phdr[i].memsz;
     }
 
     proc->context.pc = ehdr->entry;
     proc->context.ra = 0;
-    proc->context.sp = ((uintptr_t)proc->stack_base + proc->stack_size) & ~(uintptr_t)0xF;
+    proc->context.sp = ((uintptr_t)base + total_mem) & ~(uintptr_t)0xF;
+    proc->context.mstatus = 0x1808u;
     for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
+    proc->context.gp = 0;
+    proc->context.tp = 0;
+
+    proc->state = PROCESS_READY;
+    proc->context_initialized = true;
+    return 0;
+}
+
+static int sexec_probe(const void *data, size_t size)
+{
+    if (size < 12) return -1;
+    return (*(const uint32_t *)data == SEXEC_MAGIC) ? 0 : -1;
+}
+
+static int sexec_load(const void *data, size_t size, Process *proc)
+{
+    const SexecHeader *hdr = (const SexecHeader *)data;
+
+    if (size < 12) return -1;
+    if (hdr->magic != SEXEC_MAGIC) return -1;
+
+    unsigned num = hdr->num_segments;
+    if (num > SEXEC_MAX_SEGMENTS) return -1;
+
+    uint32_t segs_size = num * sizeof(SexecSegment);
+    if (12 + segs_size > size) return -1;
+
+    uint32_t total = 0;
+    for (unsigned i = 0; i < num; i++) {
+        total += hdr->segments[i].size;
+    }
+    if (total == 0) return -1;
+
+    uint8_t *base = alloc_(total);
+    if (base == NULL) return -1;
+
+    proc->text_base = 0;
+    proc->text_size = 0;
+    proc->data_base = 0;
+    proc->data_size = 0;
+    proc->bss_base = 0;
+    proc->bss_size = 0;
+
+    for (unsigned i = 0; i < num; i++) {
+        const SexecSegment *seg = &hdr->segments[i];
+        uint8_t *dest = base + seg->vaddr;
+
+        if (seg->vaddr + seg->size > total) return -1;
+
+        if (seg->type == SEG_TEXT) {
+            if (seg->offset + seg->size > size) return -1;
+            memcpy(dest, (const uint8_t *)data + seg->offset, seg->size);
+            proc->text_base = (uintptr_t)dest;
+            proc->text_size = seg->size;
+        } else if (seg->type == SEG_DATA) {
+            if (seg->offset + seg->size > size) return -1;
+            memcpy(dest, (const uint8_t *)data + seg->offset, seg->size);
+            proc->data_base = (uintptr_t)dest;
+            proc->data_size = seg->size;
+        } else if (seg->type == SEG_BSS) {
+            memset(dest, 0, seg->size);
+            proc->bss_base = (uintptr_t)dest;
+            proc->bss_size = seg->size;
+        }
+    }
+
+    proc->context.pc = (uintptr_t)base + hdr->entry;
+    proc->context.gp = (uintptr_t)base;
+
+    uintptr_t stack_top = (uintptr_t)base + total;
+    stack_top &= ~(uintptr_t)0xF;
+    proc->context.sp = stack_top;
+
+    for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
+    proc->context.ra = 0;
+    proc->context.tp = 0;
+    proc->context.mstatus = 0x1808u;
+
+    if (hdr->flags & SEXEC_FLAG_PRIV_CONTROLLER) {
+        proc->privilege = PRIV_CONTROLLER;
+    } else {
+        proc->privilege = PRIV_USER;
+    }
+
     proc->state = PROCESS_READY;
     proc->context_initialized = true;
     return 0;
@@ -89,7 +201,9 @@ static int elf_load(const void *data, size_t size, Process *proc)
 
 static int bin_probe(const void *data, size_t size)
 {
-    (void)data;
+    if (size < 4) return -1;
+    uint32_t magic = *(const uint32_t *)data;
+    if (magic == ELF_MAGIC || magic == SEXEC_MAGIC) return -1;
     return (size > 0) ? 0 : -1;
 }
 
@@ -99,10 +213,16 @@ static int bin_load(const void *data, size_t size, Process *proc)
     if (copy == NULL) return -1;
 
     memcpy(copy, data, size);
-    proc->stack_base = copy;
-    proc->stack_size = size;
+    proc->text_base = (uintptr_t)copy;
+    proc->text_size = size;
     return 0;
 }
+
+static const LoaderFormat sexec_format = {
+    .name = "SEXEC",
+    .probe = sexec_probe,
+    .load = sexec_load,
+};
 
 static const LoaderFormat elf_format = {
     .name = "ELF",
@@ -137,6 +257,7 @@ int loader_load(const void *data, size_t size, Process *proc)
 
 void loader_init(void)
 {
+    loader_register_format(&sexec_format);
     loader_register_format(&elf_format);
     loader_register_format(&binary_format);
 }
@@ -153,7 +274,8 @@ int process_load_binary(const void *data, size_t size,
     if (ret == 0) {
         proc->context.pc = entry_addr;
         proc->context.ra = 0;
-        proc->context.sp = ((uintptr_t)proc->stack_base + proc->stack_size) & ~(uintptr_t)0xF;
+        proc->context.sp = ((uintptr_t)proc->text_base + proc->text_size) & ~(uintptr_t)0xF;
+        proc->context.mstatus = 0x1808u;
         for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
         proc->context.gp = 0;
         proc->context.tp = 0;
@@ -170,6 +292,7 @@ Process *process_create(void (*entry)(void *), void *arg)
 
     proc->pid = next_pid++;
     proc->state = PROCESS_UNUSED;
+    proc->privilege = PRIV_USER;
     proc->entry = entry;
     proc->wake_tick = 0;
     proc->msg_head = 0;
@@ -178,6 +301,12 @@ Process *process_create(void (*entry)(void *), void *arg)
     proc->argument = arg;
     proc->stack_base = NULL;
     proc->stack_size = 0;
+    proc->text_base = 0;
+    proc->text_size = 0;
+    proc->data_base = 0;
+    proc->data_size = 0;
+    proc->bss_base = 0;
+    proc->bss_size = 0;
     proc->next = NULL;
     proc->prev = NULL;
     proc->context_initialized = false;
