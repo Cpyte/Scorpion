@@ -1,11 +1,29 @@
+"""
+Scorpion SEXEC format builder — ELF to SEXEC conversion.
+
+NOTE: This is a DEVELOPMENT CONVENIENCE TOOL and NOT the recommended route
+for production use. It relies on objdump/readelf/objcopy to extract section
+data and does not preserve ELF metadata beyond segment contents. For
+production, author SEXEC binaries directly using the format spec in
+docs/exec-format.md.
+"""
+
 import struct, sys, subprocess, os
 
 def build(elf_path, sexec_output, flags=0):
+    if not os.path.isfile(elf_path):
+        print(f"error: {elf_path}: not found", file=sys.stderr)
+        sys.exit(1)
+
     sections = {}
     result = subprocess.run(
         ['riscv64-elf-objdump', '-h', elf_path],
         capture_output=True, text=True
     )
+    if result.returncode != 0:
+        print(f"error: objdump failed on {elf_path}", file=sys.stderr)
+        sys.exit(1)
+
     for line in result.stdout.split('\n'):
         parts = line.split()
         if len(parts) >= 4 and parts[0].isdigit():
@@ -17,18 +35,27 @@ def build(elf_path, sexec_output, flags=0):
         ['riscv64-elf-readelf', '-h', elf_path],
         capture_output=True, text=True
     )
+    if result.returncode != 0:
+        print(f"error: readelf failed on {elf_path}", file=sys.stderr)
+        sys.exit(1)
+
     entry = 0
     for line in result.stdout.split('\n'):
         if 'Entry point address' in line:
             entry = int(line.split(':')[1].strip(), 16)
 
+    bin_path = elf_path + '.bin'
     result = subprocess.run(
-        ['riscv64-elf-objcopy', '-O', 'binary', elf_path, elf_path + '.bin'],
+        ['riscv64-elf-objcopy', '-O', 'binary', elf_path, bin_path],
         capture_output=True, text=True
     )
-    with open(elf_path + '.bin', 'rb') as f:
+    if result.returncode != 0:
+        print(f"error: objcopy failed on {elf_path}", file=sys.stderr)
+        sys.exit(1)
+
+    with open(bin_path, 'rb') as f:
         flat = f.read()
-    os.unlink(elf_path + '.bin')
+    os.unlink(bin_path)
 
     segments = []
     off = 0
@@ -44,6 +71,10 @@ def build(elf_path, sexec_output, flags=0):
     if '.bss' in sections:
         segments.append((2, off, sections['.bss']))
 
+    if not segments:
+        print(f"error: {elf_path}: no known sections found", file=sys.stderr)
+        sys.exit(1)
+
     num = len(segments)
     hdr = 12 + num * 16
 
@@ -58,9 +89,14 @@ def build(elf_path, sexec_output, flags=0):
     with open(sexec_output, 'wb') as f:
         f.write(out)
 
-    print(f"Created {sexec_output}: {len(out)} bytes, {num} segments, entry=0x{entry:x}, flags=0x{flags:x}")
+    print(f"Created {sexec_output}: {len(out)} bytes, {num} segments, "
+          f"entry=0x{entry:x}, flags=0x{flags:x}")
 
 def build_h(sexec_path, h_output):
+    if not os.path.isfile(sexec_path):
+        print(f"error: {sexec_path}: not found", file=sys.stderr)
+        sys.exit(1)
+
     with open(sexec_path, 'rb') as f:
         data = f.read()
     base = os.path.splitext(os.path.basename(sexec_path))[0]
@@ -84,5 +120,8 @@ if __name__ == '__main__':
         idx = args.index('--flags')
         flags = int(args[idx + 1], 0)
         args = args[:idx] + args[idx+2:]
+    if len(args) < 2:
+        print(f"usage: {sys.argv[0]} [--flags N] <input.elf> <output.sexec>", file=sys.stderr)
+        sys.exit(1)
     elf_path, sexec_output = args[0], args[1]
     build(elf_path, sexec_output, flags)

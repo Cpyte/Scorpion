@@ -75,6 +75,7 @@ static int elf_load(const void *data, size_t size, Process *proc)
     uint8_t *base = alloc_(total_mem);
     if (base == NULL) return -1;
 
+    proc->alloc_base = (uintptr_t)base;
     proc->text_base = 0;
     proc->text_size = 0;
     proc->data_base = 0;
@@ -146,6 +147,7 @@ static int sexec_load(const void *data, size_t size, Process *proc)
     uint8_t *base = alloc_(total);
     if (base == NULL) return -1;
 
+    proc->alloc_base = (uintptr_t)base;
     proc->text_base = 0;
     proc->text_size = 0;
     proc->data_base = 0;
@@ -213,6 +215,7 @@ static int bin_load(const void *data, size_t size, Process *proc)
     if (copy == NULL) return -1;
 
     memcpy(copy, data, size);
+    proc->alloc_base = (uintptr_t)copy;
     proc->text_base = (uintptr_t)copy;
     proc->text_size = size;
     return 0;
@@ -285,30 +288,25 @@ int process_load_binary(const void *data, size_t size,
     return ret;
 }
 
-Process *process_create(void (*entry)(void *), void *arg)
+Process *process_alloc(void)
 {
     Process *proc = alloc_(sizeof(Process));
     if (proc == NULL) return NULL;
 
-    proc->pid = next_pid++;
+    memset(proc, 0, sizeof(Process));
     proc->state = PROCESS_UNUSED;
     proc->privilege = PRIV_USER;
+    spinlock_init(&proc->msg_lock);
+    return proc;
+}
+
+Process *process_create(void (*entry)(void *), void *arg)
+{
+    Process *proc = process_alloc();
+    if (proc == NULL) return NULL;
+
+    proc->pid = next_pid++;
     proc->entry = entry;
-    proc->wake_tick = 0;
-    proc->msg_head = 0;
-    proc->msg_tail = 0;
-    proc->msg_count = 0;
     proc->argument = arg;
-    proc->stack_base = NULL;
-    proc->stack_size = 0;
-    proc->text_base = 0;
-    proc->text_size = 0;
-    proc->data_base = 0;
-    proc->data_size = 0;
-    proc->bss_base = 0;
-    proc->bss_size = 0;
-    proc->next = NULL;
-    proc->prev = NULL;
-    proc->context_initialized = false;
     return proc;
 }

@@ -209,18 +209,16 @@ int process_terminate(Process *proc)
 {
     if (proc == NULL || proc->state == PROCESS_UNUSED) return -1;
     if (proc->privilege == PRIV_KERNEL) return -1;
+    if (proc->state == PROCESS_RUNNING) return -1;
 
     proc->state = PROCESS_TERMINATED;
 
-    if (proc->text_base && proc->text_size)
-        free_((void *)proc->text_base);
-    if (proc->data_base && proc->data_size)
-        free_((void *)proc->data_base);
-    if (proc->bss_base && proc->bss_size)
-        free_((void *)proc->bss_base);
-    if (proc->stack_base && proc->stack_size)
+    if (proc->alloc_base)
+        free_((void *)proc->alloc_base);
+    if (proc->stack_base)
         free_(proc->stack_base);
 
+    proc->alloc_base = 0;
     proc->text_base = 0;
     proc->text_size = 0;
     proc->data_base = 0;
@@ -242,7 +240,8 @@ int evict_lowest_priority(size_t min_freed)
         Process *proc = p->process;
         if (proc->privilege == PRIV_USER &&
             proc->state != PROCESS_UNUSED &&
-            proc->state != PROCESS_TERMINATED) {
+            proc->state != PROCESS_TERMINATED &&
+            proc->state != PROCESS_RUNNING) {
             size_t proc_size = proc->text_size + proc->data_size +
                                proc->bss_size + proc->stack_size;
             if (proc_size >= min_freed) {
@@ -277,10 +276,14 @@ int evict_lowest_priority(size_t min_freed)
 }
 
 #define SIO_BASE            0xd0000000u
+#define SIO_MTIME_CTRL      0x1a0
 #define SIO_MTIME           0x1b0
 #define SIO_MTIMEH          0x1b4
 #define SIO_MTIMECMP        0x1b8
 #define SIO_MTIMECMPH       0x1bc
+
+#define MTIME_CTRL_EN       1u
+#define MTIME_CTRL_FULLSPEED 2u
 
 #define TIMER_INTERVAL      1000000u
 
@@ -307,6 +310,9 @@ static inline void timer_set_cmp(uint64_t cmp)
 void timer_init(void)
 {
     volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
+
+    sio[SIO_MTIME_CTRL / 4] = MTIME_CTRL_EN | MTIME_CTRL_FULLSPEED;
+
     sio[SIO_MTIME / 4] = 0;
     sio[SIO_MTIMEH / 4] = 0;
     sio[SIO_MTIME / 4] = 0;
@@ -317,10 +323,6 @@ void timer_init(void)
     __asm__ volatile ("csrr %0, 0x304" : "=r"(mie));
     mie |= 0x80u;
     __asm__ volatile ("csrw 0x304, %0" : : "r"(mie));
-
-    sio[SIO_MTIME / 4] = 0;
-    sio[SIO_MTIMEH / 4] = 0;
-    sio[SIO_MTIME / 4] = 0;
 }
 
 void timer_irq(void)
@@ -407,7 +409,10 @@ int send_message(Process *target, uint32_t type, const void *data, size_t len)
         return -1;
     }
 
+    uint32_t flags = irq_save();
+
     if (target->msg_count >= IPC_QUEUE_DEPTH) {
+        irq_restore(flags);
         return -1;
     }
 
@@ -430,6 +435,7 @@ int send_message(Process *target, uint32_t type, const void *data, size_t len)
         target->wake_tick = 0;
     }
 
+    irq_restore(flags);
     return (int)copy_len;
 }
 
@@ -439,6 +445,8 @@ int receive_message(uint32_t *type, void *buf, size_t len, uint16_t *sender_pid)
     Process *current = current_process[core];
 
     for (;;) {
+        uint32_t flags = irq_save();
+
         if (current->msg_count > 0) {
             Message *msg = &current->msg_queue[current->msg_head];
 
@@ -454,8 +462,11 @@ int receive_message(uint32_t *type, void *buf, size_t len, uint16_t *sender_pid)
             current->msg_head = (current->msg_head + 1) % IPC_QUEUE_DEPTH;
             current->msg_count--;
 
+            irq_restore(flags);
             return (int)copy_len;
         }
+
+        irq_restore(flags);
 
         current->state = PROCESS_BLOCKED;
         context_switch(&current->context, &scheduler[core].context);

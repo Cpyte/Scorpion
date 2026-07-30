@@ -134,11 +134,10 @@ void trap_handler(RiscVTrapFrame *frame)
             size_t sexec_size = frame->a[1];
             uint16_t priority = (uint16_t)frame->a[2];
 
-            Process *new_proc = alloc_(sizeof(Process));
+            Process *new_proc = process_alloc();
             if (new_proc == NULL) {
-                if (evict_lowest_priority(sizeof(Process)) == 0) {
-                    new_proc = alloc_(sizeof(Process));
-                }
+                if (evict_lowest_priority(sizeof(Process)) == 0)
+                    new_proc = process_alloc();
                 if (new_proc == NULL) {
                     frame->a[0] = (uintptr_t)-2;
                     break;
@@ -146,56 +145,18 @@ void trap_handler(RiscVTrapFrame *frame)
             }
 
             new_proc->pid = next_pid++;
-            new_proc->state = PROCESS_UNUSED;
-            new_proc->privilege = PRIV_USER;
-            new_proc->entry = NULL;
-            new_proc->argument = NULL;
-            new_proc->wake_tick = 0;
-            new_proc->msg_head = 0;
-            new_proc->msg_tail = 0;
-            new_proc->msg_count = 0;
-            new_proc->stack_base = NULL;
-            new_proc->stack_size = 0;
-            new_proc->text_base = 0;
-            new_proc->text_size = 0;
-            new_proc->data_base = 0;
-            new_proc->data_size = 0;
-            new_proc->bss_base = 0;
-            new_proc->bss_size = 0;
-            new_proc->next = NULL;
-            new_proc->prev = NULL;
-            new_proc->context_initialized = false;
 
             int ret = loader_load(sexec_data, sexec_size, new_proc);
             if (ret != 0) {
                 size_t needed = new_proc->text_size + new_proc->data_size + new_proc->bss_size;
                 free_(new_proc);
                 if (needed > 0 && evict_lowest_priority(needed) == 0) {
-                    new_proc = alloc_(sizeof(Process));
+                    new_proc = process_alloc();
                     if (new_proc == NULL) {
                         frame->a[0] = (uintptr_t)-2;
                         break;
                     }
                     new_proc->pid = next_pid++;
-                    new_proc->state = PROCESS_UNUSED;
-                    new_proc->privilege = PRIV_USER;
-                    new_proc->entry = NULL;
-                    new_proc->argument = NULL;
-                    new_proc->wake_tick = 0;
-                    new_proc->msg_head = 0;
-                    new_proc->msg_tail = 0;
-                    new_proc->msg_count = 0;
-                    new_proc->stack_base = NULL;
-                    new_proc->stack_size = 0;
-                    new_proc->text_base = 0;
-                    new_proc->text_size = 0;
-                    new_proc->data_base = 0;
-                    new_proc->data_size = 0;
-                    new_proc->bss_base = 0;
-                    new_proc->bss_size = 0;
-                    new_proc->next = NULL;
-                    new_proc->prev = NULL;
-                    new_proc->context_initialized = false;
                     ret = loader_load(sexec_data, sexec_size, new_proc);
                 }
             }

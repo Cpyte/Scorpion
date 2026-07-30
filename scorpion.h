@@ -140,12 +140,14 @@ typedef struct Process {
     uint16_t msg_head;
     uint16_t msg_tail;
     uint16_t msg_count;
+    uintptr_t alloc_base;
     uintptr_t text_base;
     size_t text_size;
     uintptr_t data_base;
     size_t data_size;
     uintptr_t bss_base;
     size_t bss_size;
+    spinlock_t msg_lock;
 } Process;
 
 typedef struct {
@@ -224,6 +226,7 @@ void log_warn(const char *fmt, ...);
 void log_error(const char *fmt, ...);
 void __attribute__((noreturn)) panic(const char *fmt, ...);
 
+Process *process_alloc(void);
 Process *process_create(void (*entry)(void *), void *arg);
 
 int process_terminate(Process *proc);
@@ -262,5 +265,17 @@ void timer_irq(void);
 #define csr_write(csr, val) ({ \
     __asm__ volatile ("csrw " csr ", %0" : : "r"(val)); \
 })
+
+static inline uint32_t irq_save(void)
+{
+    uint32_t mstatus;
+    __asm__ volatile ("csrrci %0, mstatus, 8" : "=r"(mstatus) : : "memory");
+    return mstatus;
+}
+
+static inline void irq_restore(uint32_t mstatus)
+{
+    __asm__ volatile ("csrw mstatus, %0" : : "r"(mstatus) : "memory");
+}
 
 #endif

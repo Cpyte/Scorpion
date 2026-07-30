@@ -8,3 +8,4 @@ build*/
 *.swp
 *.swo
 .DS_Store
+pico-sdk-2.3.0*/
