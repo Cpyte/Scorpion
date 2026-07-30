@@ -6,15 +6,15 @@ and dispatches to the first one whose `probe` routine returns success.
 
 Three built-in formats are registered (in order):
 
-1. **SEXEC** — Scorpion's native format
+1. **SEF** — Scorpion's native format
 2. **ELF** — 32-bit RISC-V ELF
 3. **BIN** — flat binary (fallback)
 
 ---
 
-## SEXEC (Scorpion Executable)
+## SEF (Scorpion Executable)
 
-SEXEC is the recommended format for loading programs at runtime via
+SEF is the recommended format for loading programs at runtime via
 `scorpion_spawn()`. It is simple, self-contained, and does not require a
 toolchain that targets the kernel's exact memory layout.
 
@@ -23,10 +23,10 @@ toolchain that targets the kernel's exact memory layout.
 ```
  Offset  Size  Field
  ──────  ────  ───────────────────────
-  0       4    magic       = 0x45584553  ("SEXE")
+   0       4    magic       = 0x00464553  ("SEF\0")
   4       4    entry       (byte offset from base of loaded segments)
   8       2    num_segments
- 10       2    flags       (bit 0 = SEXEC_FLAG_PRIV_CONTROLLER)
+ 10       2    flags       (bit 0 = SEF_FLAG_PRIV_CONTROLLER)
  12      16×n  segments[]  (n = num_segments)
 
 Each segment descriptor (16 bytes):
@@ -35,27 +35,27 @@ Each segment descriptor (16 bytes):
    0       4    type        (0=TEXT, 1=DATA, 2=BSS)
    4       4    vaddr       (byte offset from base allocation)
    8       4    size        (byte length of segment)
-  12       4    offset      (byte offset in the SEXEC file where data begins)
+  12       4    offset      (byte offset in the SEF file where data begins)
 
 After the header + segment descriptors, raw segment data is concatenated at
 the file offsets given by each segment's `offset` field.
 ```
 
-### Building SEXEC
+### Building SEF
 
-The `user/mksexec.py` script converts a statically-linked RISC-V ELF into
-SEXEC format:
+The `user/mksef.py` script converts a statically-linked RISC-V ELF into
+SEF format:
 
 ```bash
-python3 user/mksexec.py input.elf output.sexec
-python3 user/mksexec.py --flags 1 input.elf output.sexec  # controller process
+python3 user/mksef.py input.elf output.sef
+python3 user/mksef.py --flags 1 input.elf output.sef  # controller process
 ```
 
-> **Note:** The ELF→SEXEC conversion path (`mksexec.py`) is a development
+> **Note:** The ELF→SEF conversion path (`mksef.py`) is a development
 > convenience and **not the recommended route** for production use. It
 > relies on `objdump`, `readelf`, and `objcopy` to extract section data and
 > does not preserve ELF metadata beyond the segment contents. For production,
-> author SEXEC binaries directly using the format spec above, or use the ELF
+> author SEF binaries directly using the format spec above, or use the ELF
 > loader directly on hardware that supports XIP.
 
 ### Loading
@@ -67,7 +67,7 @@ is placed at `base + total`.
 
 ### PackROM Integration
 
-The `tools/packrom.py` script embeds a controller SEXEC binary into the UF2
+The `tools/packrom.py` script embeds a controller SEF binary into the UF2
 image alongside the kernel. The kernel reads it from XIP flash at a fixed
 offset during boot and spawns it via `scorpion_spawn`.
 
@@ -95,7 +95,7 @@ wrapper `process_load_elf()`.
 ## BIN (Flat Binary)
 
 The catch-all format accepted only when the data does not start with ELF or
-SEXEC magic. The loader copies the data into a heap allocation and sets
+SEF magic. The loader copies the data into a heap allocation and sets
 `text_base`/`text_size`. No entry point, no stack, no privilege — the caller
 must finish initialising the process context via `process_load_binary()`.
 

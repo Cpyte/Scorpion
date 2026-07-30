@@ -4,7 +4,7 @@
 Flash layout:
   0x00000000  boot2 (256 bytes, assembled from source)
   0x00000100  kernel binary (loaded by boot ROM to SRAM @ 0x20000000)
-  0x00010000  [4-byte size][controller sexec]  (read via XIP by init)
+   0x00010000  [4-byte size][controller sef]  (read via XIP by init)
 """
 
 import struct
@@ -75,11 +75,11 @@ def uf2_blocks(data, flash_offset, block_start, total):
         off += DATA_SIZE
     return blocks
 
-def main(kernel_bin, ctrl_sexec, output_uf2):
+def main(kernel_bin, ctrl_sef, output_uf2):
     boot2 = assemble_boot2().ljust(256, b'\x00')
     with open(kernel_bin, 'rb') as f:
         kernel = f.read()
-    with open(ctrl_sexec, 'rb') as f:
+    with open(ctrl_sef, 'rb') as f:
         ctrl = f.read()
 
     ctrl_packed = struct.pack('<I', len(ctrl)) + ctrl
@@ -102,6 +102,6 @@ def main(kernel_bin, ctrl_sexec, output_uf2):
 
 if __name__ == '__main__':
     if len(sys.argv) != 4:
-        print(f"Usage: {sys.argv[0]} <kernel.bin> <controller.sexec> <output.uf2>")
+        print(f"Usage: {sys.argv[0]} <kernel.bin> <controller.sef> <output.uf2>")
         sys.exit(1)
     main(sys.argv[1], sys.argv[2], sys.argv[3])

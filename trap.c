@@ -1,7 +1,7 @@
 #include "alloc.h"
 #include "fuse.h"
 #include "loader.h"
-#include "sexec.h"
+#include "sef.h"
 #include "scorpion.h"
 
 #define SYS_YIELD      0
@@ -130,8 +130,8 @@ void trap_handler(RiscVTrapFrame *frame)
                 frame->a[0] = (uintptr_t)-1;
                 break;
             }
-            const void *sexec_data = (const void *)frame->a[0];
-            size_t sexec_size = frame->a[1];
+            const void *sef_data = (const void *)frame->a[0];
+            size_t sef_size = frame->a[1];
             uint16_t priority = (uint16_t)frame->a[2];
 
             Process *new_proc = process_alloc();
@@ -146,7 +146,7 @@ void trap_handler(RiscVTrapFrame *frame)
 
             new_proc->pid = next_pid++;
 
-            int ret = loader_load(sexec_data, sexec_size, new_proc);
+            int ret = loader_load(sef_data, sef_size, new_proc);
             if (ret != 0) {
                 size_t needed = new_proc->text_size + new_proc->data_size + new_proc->bss_size;
                 free_(new_proc);
@@ -157,7 +157,7 @@ void trap_handler(RiscVTrapFrame *frame)
                         break;
                     }
                     new_proc->pid = next_pid++;
-                    ret = loader_load(sexec_data, sexec_size, new_proc);
+                    ret = loader_load(sef_data, sef_size, new_proc);
                 }
             }
 

@@ -21,7 +21,7 @@ static void init_process(void *argument)
 
     log_info("init: booting, will spawn controller");
 
-    /* packrom.py placed [4-byte size][controller.sexec] at flash offset
+    /* packrom.py placed [4-byte size][controller.sef] at flash offset
      * 0x10000.  The boot ROM loaded only the kernel to SRAM, so we read
      * the controller via XIP. */
     kernel_region.base = 0;

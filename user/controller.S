@@ -2,13 +2,13 @@
 .globl _start
 _start:
 1:
-    auipc a0, %pcrel_hi(user_sexec_start)
+    auipc a0, %pcrel_hi(user_sef_start)
     addi  a0, a0, %pcrel_lo(1b)
 2:
-    auipc a1, %pcrel_hi(user_sexec_end)
+    auipc a1, %pcrel_hi(user_sef_end)
     addi  a1, a1, %pcrel_lo(2b)
 3:
-    auipc a2, %pcrel_hi(user_sexec_start)
+    auipc a2, %pcrel_hi(user_sef_start)
     addi  a2, a2, %pcrel_lo(3b)
     sub   a1, a1, a2
     li    a2, 100
@@ -22,6 +22,6 @@ loop:
 
 .section .rodata
 .balign 4
-user_sexec_start:
-    .incbin "test_user.sexec"
-user_sexec_end:
+user_sef_start:
+    .incbin "test_user.sef"
+user_sef_end:

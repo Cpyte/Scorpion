@@ -5,7 +5,7 @@
 #include "console.h"
 #include "loader.h"
 #include "scorpion.h"
-#include "sexec.h"
+#include "sef.h"
 
 #define ELF_MAGIC      0x464C457F
 #define ELF_32CLASS    1
@@ -63,6 +63,9 @@ static int elf_load(const void *data, size_t size, Process *proc)
     if (ehdr->machine != ELF_RISCV) return -1;
     if (ehdr->phnum == 0) return -1;
 
+    size_t ph_end = (size_t)ehdr->phoff + (size_t)ehdr->phnum * sizeof(Elf32Phdr);
+    if (ph_end > size || ph_end < (size_t)ehdr->phoff) return -1;
+
     const Elf32Phdr *phdr = (const Elf32Phdr *)((const uint8_t *)data + ehdr->phoff);
 
     size_t total_mem = 0;
@@ -87,6 +90,12 @@ static int elf_load(const void *data, size_t size, Process *proc)
     for (unsigned i = 0; i < ehdr->phnum; i++) {
         if (phdr[i].type != ELF_PT_LOAD) continue;
         if (phdr[i].memsz == 0) continue;
+
+        if (phdr[i].offset + phdr[i].filesz > size ||
+            phdr[i].offset + phdr[i].filesz < phdr[i].offset) {
+            free_(base);
+            return -1;
+        }
 
         uint8_t *seg = base + offset;
         if (phdr[i].filesz > 0)
@@ -119,23 +128,23 @@ static int elf_load(const void *data, size_t size, Process *proc)
     return 0;
 }
 
-static int sexec_probe(const void *data, size_t size)
+static int sef_probe(const void *data, size_t size)
 {
     if (size < 12) return -1;
-    return (*(const uint32_t *)data == SEXEC_MAGIC) ? 0 : -1;
+    return (*(const uint32_t *)data == SEF_MAGIC) ? 0 : -1;
 }
 
-static int sexec_load(const void *data, size_t size, Process *proc)
+static int sef_load(const void *data, size_t size, Process *proc)
 {
-    const SexecHeader *hdr = (const SexecHeader *)data;
+    const SefHeader *hdr = (const SefHeader *)data;
 
     if (size < 12) return -1;
-    if (hdr->magic != SEXEC_MAGIC) return -1;
+    if (hdr->magic != SEF_MAGIC) return -1;
 
     unsigned num = hdr->num_segments;
-    if (num > SEXEC_MAX_SEGMENTS) return -1;
+    if (num > SEF_MAX_SEGMENTS) return -1;
 
-    uint32_t segs_size = num * sizeof(SexecSegment);
+    uint32_t segs_size = num * sizeof(SefSegment);
     if (12 + segs_size > size) return -1;
 
     uint32_t total = 0;
@@ -156,18 +165,21 @@ static int sexec_load(const void *data, size_t size, Process *proc)
     proc->bss_size = 0;
 
     for (unsigned i = 0; i < num; i++) {
-        const SexecSegment *seg = &hdr->segments[i];
+        const SefSegment *seg = &hdr->segments[i];
         uint8_t *dest = base + seg->vaddr;
 
-        if (seg->vaddr + seg->size > total) return -1;
+        if (seg->vaddr + seg->size > total) {
+            free_(base);
+            return -1;
+        }
 
         if (seg->type == SEG_TEXT) {
-            if (seg->offset + seg->size > size) return -1;
+            if (seg->offset + seg->size > size) { free_(base); return -1; }
             memcpy(dest, (const uint8_t *)data + seg->offset, seg->size);
             proc->text_base = (uintptr_t)dest;
             proc->text_size = seg->size;
         } else if (seg->type == SEG_DATA) {
-            if (seg->offset + seg->size > size) return -1;
+            if (seg->offset + seg->size > size) { free_(base); return -1; }
             memcpy(dest, (const uint8_t *)data + seg->offset, seg->size);
             proc->data_base = (uintptr_t)dest;
             proc->data_size = seg->size;
@@ -190,7 +202,7 @@ static int sexec_load(const void *data, size_t size, Process *proc)
     proc->context.tp = 0;
     proc->context.mstatus = 0x1808u;
 
-    if (hdr->flags & SEXEC_FLAG_PRIV_CONTROLLER) {
+    if (hdr->flags & SEF_FLAG_PRIV_CONTROLLER) {
         proc->privilege = PRIV_CONTROLLER;
     } else {
         proc->privilege = PRIV_USER;
@@ -205,7 +217,7 @@ static int bin_probe(const void *data, size_t size)
 {
     if (size < 4) return -1;
     uint32_t magic = *(const uint32_t *)data;
-    if (magic == ELF_MAGIC || magic == SEXEC_MAGIC) return -1;
+    if (magic == ELF_MAGIC || magic == SEF_MAGIC) return -1;
     return (size > 0) ? 0 : -1;
 }
 
@@ -218,13 +230,15 @@ static int bin_load(const void *data, size_t size, Process *proc)
     proc->alloc_base = (uintptr_t)copy;
     proc->text_base = (uintptr_t)copy;
     proc->text_size = size;
+    proc->state = PROCESS_READY;
+    proc->context_initialized = true;
     return 0;
 }
 
-static const LoaderFormat sexec_format = {
-    .name = "SEXEC",
-    .probe = sexec_probe,
-    .load = sexec_load,
+static const LoaderFormat sef_format = {
+    .name = "SEF",
+    .probe = sef_probe,
+    .load = sef_load,
 };
 
 static const LoaderFormat elf_format = {
@@ -260,14 +274,14 @@ int loader_load(const void *data, size_t size, Process *proc)
 
 void loader_init(void)
 {
-    loader_register_format(&sexec_format);
+    loader_register_format(&sef_format);
     loader_register_format(&elf_format);
     loader_register_format(&binary_format);
 }
 
-int process_load_elf(const void *elf_data, Process *proc)
+int process_load_elf(const void *elf_data, size_t elf_size, Process *proc)
 {
-    return elf_load(elf_data, 0, proc);
+    return elf_load(elf_data, elf_size, proc);
 }
 
 int process_load_binary(const void *data, size_t size,

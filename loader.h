@@ -19,7 +19,7 @@ int loader_register_format(const LoaderFormat *fmt);
 int loader_load(const void *data, size_t size, Process *proc);
 void loader_init(void);
 
-int process_load_elf(const void *elf_data, Process *proc);
+int process_load_elf(const void *elf_data, size_t elf_size, Process *proc);
 int process_load_binary(const void *data, size_t size,
                         uintptr_t entry_addr, Process *proc);
 

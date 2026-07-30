@@ -95,7 +95,7 @@ Scorpion is a **cooperative single-address-space** kernel:
   runs before a lower-priority one, and the idle process (lowest priority)
   executes `wfi` when nothing else is ready.
 - Executables are loaded through a pluggable format interface; built-in
-  loaders include **SEXEC** (Scorpion's native format), ELF, and flat binary.
+  loaders include **SEF** (Scorpion's native format), ELF, and flat binary.
   There is no virtual memory.
 
 ---
@@ -157,8 +157,8 @@ cmake --build build
 | `build/WEW_scorpion.bin` | Flat binary (kernel only)           |
 | `build/Scorpion.uf2`   | UF2 image (boot2 + kernel + controller) |
 | `build/scorpion.map`   | Linker map with symbol addresses       |
-| `build/controller.sexec` | Controller process in SEXEC format    |
-| `build/test_user.sexec` | Test user process in SEXEC format     |
+| `build/controller.sef` | Controller process in SEF format    |
+| `build/test_user.sef` | Test user process in SEF format     |
 
 ---
 
@@ -215,7 +215,7 @@ Reset vector
                ├─ trap_init()         → set mtvec to trap_vector
                ├─ flash_init()        → locate bootrom flash routines
                ├─ fuse_init()         → mount / format FUSE
-               ├─ loader_init()       → register SEXEC, ELF, binary format handlers
+               ├─ loader_init()       → register SEF, ELF, binary format handlers
                ├─ stage_pool_init()   → pre-allocate I/O buffers
                ├─ timer_init()        → enable RISC-V platform timer (MTIE)
                ├─ process_create(init)→ create init process (PRIV_CONTROLLER)
@@ -343,7 +343,7 @@ Machine-mode trap handling:
 | 9  | WRITE     | `a0=fd, a1=buf, a2=len` | Write to a file                        |
 | 10 | CLOSE     | `a0=fd`                | Close a file descriptor                 |
 | 11 | PUTC      | `a0=str, a1=len`       | Write string to UART console            |
-| 12 | SPAWN     | `a0=sexec, a1=size, a2=priority` | Spawn a new process from SEXEC data |
+| 12 | SPAWN     | `a0=sef_data, a1=size, a2=priority` | Spawn a new process from SEF data |
 | 13 | TERMINATE | `a0=pid`              | Terminate a process by PID             |
 
 ### 7. UART Console (`console.c`)
@@ -400,41 +400,41 @@ An extensible, pluggable executable loader:
 - `loader_load(data, size, proc)` — dispatch to the appropriate format handler
   based on the input data.
 - Built-in format handlers:
-  - **SEXEC** — Scorpion's native format (magic `0x45584553`). Segments are
+  - **SEF** — Scorpion's native format (magic `0x00464553`). Segments are
     described by a header array; supports TEXT, DATA, and BSS segments. The
-    `SEXEC_FLAG_PRIV_CONTROLLER` flag sets the process privilege level.
+    `SEF_FLAG_PRIV_CONTROLLER` flag sets the process privilege level.
   - **ELF** — validates a 32-bit RISC-V ELF header; loads all `PT_LOAD`
     segments into a single contiguous allocation; distinguishes text vs. data
     segments by ELF flags (`PF_X`, `PF_W`); sets `PC` = ELF entry point.
   - **Raw binary** — loads a flat binary with a specified entry address.
-    Registered last; rejects data matching ELF or SEXEC magic.
+    Registered last; rejects data matching ELF or SEF magic.
 - `process_create(entry, arg)` — allocates and initialises a `Process` struct
   for a given entry function.
 
-**SEXEC format structure:**
+**SEF format structure:**
 
 ```
 ┌─────────────────────────┐
-│  uint32 magic 0x45584553 │
+│  uint32 magic 0x00464553 │
 │  uint32 entry            │
 │  uint16 num_segments     │
 │  uint16 flags            │
 ├─────────────────────────┤
-│  SexecSegment[0]         │
+│  SefSegment[0]         │
 │    type (0=TEXT,1=DATA,2=BSS)│
 │    vaddr (offset from base)  │
 │    size                     │
 │    offset (in file)         │
-│  SexecSegment[1]         │
+│  SefSegment[1]         │
 │  ...                     │
 ├─────────────────────────┤
 │  Raw segment data        │
 └─────────────────────────┘
 ```
 
-The `mksexec.py` tool converts an ELF with `.text`, `.rodata`, `.data`, and
-`.bss` sections into the SEXEC format. The `packrom.py` tool embeds the
-controller SEXEC binary at a fixed flash offset alongside the kernel during the
+The `mksef.py` tool converts an ELF with `.text`, `.rodata`, `.data`, and
+`.bss` sections into the SEF format. The `packrom.py` tool embeds the
+controller SEF binary at a fixed flash offset alongside the kernel during the
 UF2 build step.
 
 ### 12. ABI (`abi/scorpion.h`)
@@ -481,7 +481,7 @@ bit-manipulation instructions.
 ├── README.md                   # This file
 ├── scorpion.h                  # Master kernel header (types, IPC, scheduler API)
 ├── scorpion.h                   # Master kernel header (types, IPC, scheduler API, CSRs)
-├── sexec.h                      # SEXEC executable format struct definitions
+├── sef.h                      # SEF executable format struct definitions
 ├── main.c                       # Kernel entry: boots subsystems, spawns init, starts scheduler
 ├── alloc.c / alloc.h             # Heap allocator (bump + free-list + buddy)
 ├── palloc.c                     # Physical page allocator (bitmap-based)
@@ -492,7 +492,7 @@ bit-manipulation instructions.
 ├── driver.c / driver.h           # Driver registration framework + stage buffers
 ├── flash.c / flash.h             # QSPI flash driver (bootrom table lookup + XIP)
 ├── fuse.c / fuse.h               # FUSE filesystem on flash
-├── loader.c / loader.h           # Pluggable executable loader (SEXEC, ELF, binary)
+├── loader.c / loader.h           # Pluggable executable loader (SEF, ELF, binary)
 ├── arch/
 │   └── riscv32/
 │       ├── crt0.S                # C runtime: reset vector, data/BSS init
@@ -502,9 +502,9 @@ bit-manipulation instructions.
 ├── abi/
 │   └── scorpion.h               # User-space syscall inline wrappers
 ├── tools/
-│   └── packrom.py               # UF2 packer: boot2 + kernel + controller SEXEC
+│   └── packrom.py               # UF2 packer: boot2 + kernel + controller SEF
 ├── user/
-│   ├── mksexec.py               # SEXEC builder: ELF → SEXEC conversion
+│   ├── mksef.py               # SEF builder: ELF → SEF conversion
 │   ├── controller.S              # Controller process (PRIV_CONTROLLER)
 │   └── test_user.S              # Test user process (PRIV_USER)
 └── pico-sdk-2.3.0/              # Vendored Raspberry Pi Pico SDK v2.3.0

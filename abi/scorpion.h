@@ -119,9 +119,9 @@ static inline int scorpion_close(int fd)
     return a0;
 }
 
-static inline int scorpion_spawn(const void *sexec_data, unsigned size, unsigned priority)
+static inline int scorpion_spawn(const void *sef_data, unsigned size, unsigned priority)
 {
-    register const void *a0 asm("a0") = sexec_data;
+    register const void *a0 asm("a0") = sef_data;
     register unsigned a1 asm("a1") = size;
     register unsigned a2 asm("a2") = priority;
     register unsigned a7 asm("a7") = SYS_SPAWN;

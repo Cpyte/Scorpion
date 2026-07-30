@@ -25,7 +25,7 @@ set(LINKER_SCRIPT "${ARCH_DIR}/kernel.ld")
 
 find_program(RISCV_LD riscv64-elf-ld REQUIRED)
 
-# --- User test Sexec binary ---
+# --- User test SEF binary ---
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_user.o
     COMMAND ${CMAKE_C_COMPILER} -march=rv32imac -mabi=ilp32
@@ -44,14 +44,14 @@ add_custom_command(
 )
 
 add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_user.sexec
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/user/mksexec.py
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/test_user.sef
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/user/mksef.py
         ${CMAKE_CURRENT_BINARY_DIR}/test_user.elf
-        ${CMAKE_CURRENT_BINARY_DIR}/test_user.sexec
+        ${CMAKE_CURRENT_BINARY_DIR}/test_user.sef
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/test_user.elf
 )
 
-# --- Controller Sexec binary (depends on test_user.sexec) ---
+# --- Controller SEF binary (depends on test_user.sef) ---
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/controller.o
     COMMAND ${CMAKE_C_COMPILER} -march=rv32imac -mabi=ilp32
@@ -60,7 +60,7 @@ add_custom_command(
         ${CMAKE_SOURCE_DIR}/user/controller.S
         -o ${CMAKE_CURRENT_BINARY_DIR}/controller.o
     DEPENDS ${CMAKE_SOURCE_DIR}/user/controller.S
-            ${CMAKE_CURRENT_BINARY_DIR}/test_user.sexec
+            ${CMAKE_CURRENT_BINARY_DIR}/test_user.sef
 )
 
 add_custom_command(
@@ -72,15 +72,15 @@ add_custom_command(
 )
 
 add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/controller.sexec
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/user/mksexec.py --flags 1
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/controller.sef
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/user/mksef.py --flags 1
         ${CMAKE_CURRENT_BINARY_DIR}/controller.elf
-        ${CMAKE_CURRENT_BINARY_DIR}/controller.sexec
+        ${CMAKE_CURRENT_BINARY_DIR}/controller.sef
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/controller.elf
 )
 
-# Ensure controller.sexec is built before the kernel links
-add_custom_target(controller_sexec_target DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/controller.sexec)
+# Ensure controller.sef is built before the kernel links
+add_custom_target(controller_sef_target DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/controller.sef)
 
 add_executable(WEW_scorpion
     main.c
@@ -99,7 +99,7 @@ add_executable(WEW_scorpion
     "${ARCH_DIR}/crt0.S"
     abi/scorpion.h
 )
-add_dependencies(WEW_scorpion controller_sexec_target)
+add_dependencies(WEW_scorpion controller_sef_target)
 
 target_include_directories(WEW_scorpion PRIVATE "${CMAKE_SOURCE_DIR}")
 
@@ -114,7 +114,7 @@ add_custom_command(TARGET WEW_scorpion POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:WEW_scorpion> $<TARGET_FILE_DIR:WEW_scorpion>/WEW_scorpion.bin
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/packrom.py
         $<TARGET_FILE_DIR:WEW_scorpion>/WEW_scorpion.bin
-        ${CMAKE_CURRENT_BINARY_DIR}/controller.sexec
+        ${CMAKE_CURRENT_BINARY_DIR}/controller.sef
         $<TARGET_FILE_DIR:WEW_scorpion>/Scorpion.uf2
     COMMENT "Packaged Scorpion.uf2 (boot2+kernel+controller)"
 )
