@@ -1,4 +1,4 @@
-# Scorpion — Bare-Metal Kernel for Raspberry Pi RP2350 (RISC-V)
+# Scorpion — Bare-Metal Kernel for Microcontrollers (which we don't have other than pico)
 
 Scorpion is a cooperative-multitasking, single-address-space kernel for the
 Raspberry Pi RP2350 microcontroller running in **RISC-V 32-bit mode**
@@ -43,6 +43,10 @@ with no external library dependencies.
 ## Architecture Overview
 
 ```
+
+Blah Blah.
+Just read these diagrams.
+
 ┌─────────────────────────────────────────────────────────────┐
 │                   User Processes (EL0)                      │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
@@ -82,9 +86,9 @@ with no external library dependencies.
 
 > **Note:** Currently only the Raspberry Pi Pico 2 (RP2350 RISC-V) is
 > supported. Support for other microcontrollers and architectures is planned
-> for future releases.
+> for future releases (FOR REAL!!!!!).
 
-Scorpion is a **cooperative single-address-space** kernel:
+Scorpion is a **cooperative single-address-space** kernel :(:
 - Kernel code runs in machine mode (M-mode); user processes run in user mode (U-mode).
 - Processes (threads) share a single address space and yield cooperatively via
   the `ecall` instruction (syscall 0).
@@ -99,7 +103,7 @@ Scorpion is a **cooperative single-address-space** kernel:
 - **PMP** (Physical Memory Protection) restricts U-mode access to a dedicated
   user arena. Kernel memory, peripheral MMIO, and flash are inaccessible to user
   code, enforced via RISC-V PMP TOR entries at boot.
-  There is no virtual memory.
+  There is no virtual memory. Very complicated, but logically consistent.
 
 ---
 
@@ -457,7 +461,7 @@ Header for user-space programs compiled against the Scorpion kernel:
 
 Scorpion targets the **Raspberry Pi RP2350** microcontroller in **RISC-V
 mode**, where the two CPU cores implement the **Hazard3** RISC-V ISA
-(RV32IMAC).
+(RV32IMAC). We'll get to others. Well, pretty soon (sigh).
 
 Key RP2350 features relevant to Scorpion:
 
@@ -476,11 +480,11 @@ Key RP2350 features relevant to Scorpion:
 The Pico SDK's RISC-V toolchain file (`cmake/preload/toolchains/pico_riscv_gcc.cmake`)
 selects the `hazard3` system processor and uses the `B-extension` flags
 (`zba`, `zbb`, `zbs`, `zbkb`) that the Hazard3 cores implement for
-bit-manipulation instructions.
+bit-manipulation instructions okay?
 
 ---
 
-## Project Structure
+## Project Structure (complicated)
 
 ```
 ├── CMakeLists.txt              # Build: uses Pico SDK for toolchain
@@ -522,4 +526,14 @@ bit-manipulation instructions.
 ## License
 
 This project is provided for educational and development purposes. See
-individual source files for license terms.
+individual source files for license terms...... Actually just fork this.
+I'm happy if anyone even see this.
+
+## Random Trash
+This section serves no purpose.
+If you are reading this, you have found the useless bytes (yes, this is intentional nonsense).
+
+--------------------------------------------------------
+
+∆∆∆´∂πø˜πµπçµø™µ–™πµåß¬…çµœ´µœ≤£“ƒ≤œπ¬œπ“œ´“π‘√««™√‘∑≤´√
+ˆø´˜øˆƒ˜œπ˜∑πøœ˜πøµøπœ∑µƒøπœµƒøπµœøπƒµπøµç¬çœ–πµ™–ºµºª™£
