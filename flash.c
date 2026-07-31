@@ -40,6 +40,12 @@ static rom_flash_enter_cmd_xip_fn rom_flash_enter_cmd_xip;
 
 static bool flash_ready;
 
+/* Working buffer for the sector read-modify-write in flash_write().
+ * Interrupts are masked around the erase/program, so no locking is
+ * needed, but it must not live on the caller's stack (stacks are only
+ * 4 KB here). */
+static uint8_t flash_sector[FLASH_SECTOR_SIZE];
+
 static void *rom_func_lookup(uint32_t code)
 {
     rom_table_lookup_fn lookup = (rom_table_lookup_fn)(uintptr_t)(*(uint16_t *)(uintptr_t)BOOTROM_TABLE_LOOKUP_ENTRY);
@@ -78,6 +84,7 @@ int flash_read(uint32_t block, void *buf, size_t len)
     if (!flash_ready) return -1;
     if (block >= FLASH_BLOCK_COUNT) return -1;
     if (len > FLASH_BLOCK_SIZE) return -1;
+    if (buf == NULL) return -1;
 
     offset = block * FLASH_BLOCK_SIZE;
     flash_ptr = (const uint8_t *)(XIP_BASE + offset);
@@ -90,21 +97,36 @@ int flash_read(uint32_t block, void *buf, size_t len)
 int flash_write(uint32_t block, const void *buf, size_t len)
 {
     uint32_t offset;
+    uint32_t sector_start;
+    uint32_t sector_offset;
+    uint32_t flags;
 
     if (!flash_ready) return -1;
     if (block >= FLASH_BLOCK_COUNT) return -1;
     if (len > FLASH_BLOCK_SIZE) return -1;
+    if (buf == NULL) return -1;
 
     offset = block * FLASH_BLOCK_SIZE;
+    sector_start = (offset / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
+    sector_offset = offset - sector_start;
 
-    unsigned sector_start = (offset / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
+    /* Flash can only be erased a whole sector at a time, so read the full
+     * sector, patch in this block, and reprogram the whole sector to keep
+     * the sibling blocks intact. */
+    memcpy(flash_sector, (const void *)(XIP_BASE + sector_start),
+           FLASH_SECTOR_SIZE);
+    memcpy(flash_sector + sector_offset, buf, len);
 
+    /* While flash is out of XIP mode no code can be fetched or data read
+     * from it, so mask interrupts for the whole erase/program sequence. */
+    flags = irq_save();
     rom_connect_internal_flash();
     rom_flash_exit_xip();
     rom_flash_range_erase(sector_start, FLASH_SECTOR_SIZE, FLASH_SECTOR_SIZE, 0x78);
-    rom_flash_range_program(offset, (const uint8_t *)buf, len);
+    rom_flash_range_program(sector_start, flash_sector, FLASH_SECTOR_SIZE);
     rom_flash_flush_cache();
     rom_flash_enter_cmd_xip();
+    irq_restore(flags);
 
     return (int)len;
 }
@@ -113,6 +135,7 @@ int flash_erase(uint32_t block)
 {
     uint32_t offset;
     uint32_t sector_start;
+    uint32_t flags;
 
     if (!flash_ready) return -1;
     if (block >= FLASH_BLOCK_COUNT) return -1;
@@ -120,11 +143,13 @@ int flash_erase(uint32_t block)
     offset = block * FLASH_BLOCK_SIZE;
     sector_start = (offset / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
 
+    flags = irq_save();
     rom_connect_internal_flash();
     rom_flash_exit_xip();
     rom_flash_range_erase(sector_start, FLASH_SECTOR_SIZE, FLASH_SECTOR_SIZE, 0x78);
     rom_flash_flush_cache();
     rom_flash_enter_cmd_xip();
+    irq_restore(flags);
 
     return 0;
 }

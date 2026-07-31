@@ -31,6 +31,7 @@ typedef struct {
     bool used;
     int entry_idx;
     uint32_t offset;
+    unsigned mode;
 } FuseFD;
 
 static FuseFD fd_table[FUSE_MAX_FD];
@@ -45,11 +46,6 @@ static int write_super(void)
     super.data_start = data_start_block;
     super.reserved = 0;
 
-    for (unsigned i = 0; i < FUSE_MAX_FD; i++) {
-        // ANother DUM DUM
-        fd_table[i].used = false;
-    }
-
     return flash_write(0, &super, sizeof(super));
 }
 
@@ -63,8 +59,6 @@ static int read_entry(unsigned idx, FuseEntry *entry)
     const unsigned block = 1 + (idx * sizeof(FuseEntry)) / FLASH_BLOCK_SIZE;
     const unsigned offset = (idx * sizeof(FuseEntry)) % FLASH_BLOCK_SIZE;
     uint8_t buf[FLASH_BLOCK_SIZE];
-
-    //Hella we need update here~
 
     if (flash_read(block, buf, FLASH_BLOCK_SIZE) < 0) return -1;
     memcpy(entry, buf + offset, sizeof(FuseEntry));
@@ -92,19 +86,7 @@ static int find_entry(const char *name)
         if (read_entry(i, &entry) < 0) continue;
         if (!entry.used) continue;
 
-        unsigned j = 0;
-        int match = 1;
-
-        while (j < FUSE_NAME_LEN) {
-            if (entry.name[j] != name[j]) {
-                match = 0;
-                break;
-            }
-            if (name[j] == '\0') break;
-            j++;
-        }
-
-        if (match) return (int)i;
+        if (strncmp(entry.name, name, FUSE_NAME_LEN) == 0) return (int)i;
     }
 
     return -1;
@@ -125,6 +107,7 @@ static int alloc_entry(void)
 int fuse_init(void)
 {
     FuseSuper super;
+    unsigned count;
 
     for (unsigned i = 0; i < FUSE_MAX_FD; i++) {
         fd_table[i].used = false;
@@ -134,9 +117,26 @@ int fuse_init(void)
 
     if (read_super(&super) < 0 || super.magic != FUSE_MAGIC) {
         log_info("fuse: no filesystem, formatting");
-        fuse_format();
+        if (fuse_format() < 0) {
+            log_warn("fuse: format failed");
+            return -1;
+        }
     } else {
         log_info("fuse: filesystem ready, data at block %u", super.data_start);
+    }
+
+    /* Recover from a superblock whose entry_count went stale (e.g. a
+     * failed write) by recounting the used entries. */
+    count = 0;
+    for (unsigned i = 0; i < FUSE_MAX_FILES; i++) {
+        FuseEntry entry;
+        if (read_entry(i, &entry) < 0) continue;
+        if (entry.used) count++;
+    }
+
+    if (read_super(&super) == 0 && super.magic == FUSE_MAGIC && super.entry_count != count) {
+        super.entry_count = count;
+        flash_write(0, &super, sizeof(super));
     }
 
     fuse_ready = true;
@@ -149,11 +149,11 @@ int fuse_format(void)
 
     data_start_block = 1 + (FUSE_MAX_FILES * sizeof(FuseEntry) + FLASH_BLOCK_SIZE - 1) / FLASH_BLOCK_SIZE;
 
-    write_super();
+    if (write_super() < 0) return -1;
 
     memset(&blank, 0, sizeof(blank));
     for (unsigned i = 0; i < FUSE_MAX_FILES; i++) {
-        write_entry(i, &blank);
+        if (write_entry(i, &blank) < 0) return -1;
     }
 
     log_info("fuse: formatted (%u files, data at block %u)",
@@ -191,9 +191,10 @@ int fuse_open(const char *name, unsigned mode)
 
         {
             FuseSuper super;
-            read_super(&super);
-            super.entry_count++;
-            flash_write(0, &super, sizeof(super));
+            if (read_super(&super) == 0 && super.magic == FUSE_MAGIC) {
+                super.entry_count++;
+                if (flash_write(0, &super, sizeof(super)) < 0) return -1;
+            }
         }
     } else {
         read_entry((unsigned)idx, &entry);
@@ -204,6 +205,7 @@ int fuse_open(const char *name, unsigned mode)
             fd_table[i].used = true;
             fd_table[i].entry_idx = idx;
             fd_table[i].offset = 0;
+            fd_table[i].mode = mode;
             return (int)i;
         }
     }
@@ -231,8 +233,10 @@ int fuse_read(int fd, void *buf, size_t size)
 
     if (fd < 0 || fd >= (int)FUSE_MAX_FD) return -1;
     if (!fd_table[fd].used) return -1;
+    if (buf == NULL) return -1;
+    if (!(fd_table[fd].mode & FUSE_M_READ)) return -1;
 
-    read_entry((unsigned)fd_table[fd].entry_idx, &entry);
+    if (read_entry((unsigned)fd_table[fd].entry_idx, &entry) < 0) return -1;
 
     if (fd_table[fd].offset >= entry.size) return 0;
 
@@ -270,15 +274,17 @@ int fuse_write(int fd, const void *buf, size_t size)
 
     if (fd < 0 || fd >= (int)FUSE_MAX_FD) return -1;
     if (!fd_table[fd].used) return -1;
+    if (buf == NULL) return -1;
+    if (!(fd_table[fd].mode & FUSE_M_WRITE)) return -1;
 
-    read_entry((unsigned)fd_table[fd].entry_idx, &entry);
+    if (read_entry((unsigned)fd_table[fd].entry_idx, &entry) < 0) return -1;
 
     uint32_t file_pos = fd_table[fd].offset;
     size_t total = 0;
 
-    // Fixes again!
+    /* Overflow-safe size bound for this file's fixed region. */
     const uint32_t max_size = FUSE_BLOCKS_PER_FILE * FLASH_BLOCK_SIZE;
-    if (file_pos + size > max_size) return -1;
+    if (size > (size_t)(max_size - file_pos)) return -1;
 
     while (size > 0) {
         unsigned data_block = (file_pos / FLASH_BLOCK_SIZE);
@@ -301,7 +307,7 @@ int fuse_write(int fd, const void *buf, size_t size)
 
     if (file_pos > entry.size) {
         entry.size = file_pos;
-        write_entry((unsigned)fd_table[fd].entry_idx, &entry);
+        if (write_entry((unsigned)fd_table[fd].entry_idx, &entry) < 0) return -1;
     }
 
     return (int)total;
