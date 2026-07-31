@@ -192,7 +192,12 @@ int killprocess(void)
             else
                 queue.tail = prev;
 
-            free_(p->process->stack_base);
+            if (p->process->alloc_base)
+                ufree_((void *)p->process->alloc_base);
+            if (p->process->stack_base) {
+                ufree_(p->process->stack_base);
+                free_(p->process->stack_base);
+            }
             free_(p->process);
             free_(p);
 

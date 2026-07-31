@@ -91,7 +91,7 @@ trap_vector:
     mv    a0, sp
     call  trap_handler
 
-    lw    t0, TF_MEPC(sp)
+    lw    t0, TF_PC(sp)
     lw    t1, TF_MSTATUS(sp)
     csrw  mepc,   t0
     csrw  mstatus, t1

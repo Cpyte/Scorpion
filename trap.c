@@ -98,14 +98,14 @@ void trap_handler(RiscVTrapFrame *frame)
         case SYS_PUTC: {
             const void *buf = (const void *)frame->a[0];
             size_t len = frame->a[1];
-            if (!is_user_range(cur, buf, len)) { frame->a[0] = -1; break; }
+            if (!is_user_range(cur, buf, len)) { frame->a[0] = (uintptr_t)-1; break; }
             console_write((const char *)buf, len);
             break;
         }
 
         case SYS_OPEN: {
             const char *path = (const char *)frame->a[0];
-            if (!is_user_range(cur, path, 1)) { frame->a[0] = -1; break; }
+            if (!is_user_range(cur, path, 1)) { frame->a[0] = (uintptr_t)-1; break; }
             frame->a[0] = (uintptr_t)fuse_open(path, frame->a[1]);
             break;
         }
@@ -113,7 +113,7 @@ void trap_handler(RiscVTrapFrame *frame)
         case SYS_READ: {
             void *buf = (void *)frame->a[1];
             size_t rlen = frame->a[2];
-            if (!is_user_range(cur, buf, rlen)) { frame->a[0] = -1; break; }
+            if (!is_user_range(cur, buf, rlen)) { frame->a[0] = (uintptr_t)-1; break; }
             frame->a[0] = (uintptr_t)fuse_read((int)frame->a[0], buf, rlen);
             break;
         }
@@ -121,7 +121,7 @@ void trap_handler(RiscVTrapFrame *frame)
         case SYS_WRITE: {
             const void *buf = (const void *)frame->a[1];
             size_t wlen = frame->a[2];
-            if (!is_user_range(cur, buf, wlen)) { frame->a[0] = -1; break; }
+            if (!is_user_range(cur, buf, wlen)) { frame->a[0] = (uintptr_t)-1; break; }
             frame->a[0] = (uintptr_t)fuse_write((int)frame->a[0], buf, wlen);
             break;
         }
@@ -137,7 +137,7 @@ void trap_handler(RiscVTrapFrame *frame)
         case SYS_SEND: {
             const void *msg = (const void *)frame->a[2];
             size_t msglen = frame->a[3];
-            if (!is_user_range(cur, msg, msglen)) { frame->a[0] = -1; break; }
+            if (!is_user_range(cur, msg, msglen)) { frame->a[0] = (uintptr_t)-1; break; }
             frame->a[0] = (uintptr_t)send_message(
                 process_by_pid(frame->a[0]),
                 frame->a[1], msg, msglen);
@@ -235,6 +235,7 @@ void trap_handler(RiscVTrapFrame *frame)
                       cur ? cur->pid : 0);
             break;
         }
+        frame->mepc += 4;
         break;
         }
 
