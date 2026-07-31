@@ -5,6 +5,11 @@
 #define MAX_PROC 5
 #define BUDDY_STATE_SPLIT  2
 
+/* The free-list/bump allocator owns the first BUMP_RESERVE_PAGES pages;
+ * the buddy allocator manages every page above that boundary. This keeps
+ * the two allocators from ever handing out overlapping memory. */
+#define BUMP_RESERVE_PAGES 16u
+
 extern uint8_t __heap_start[];
 extern uint8_t __heap_end[];
 
@@ -20,10 +25,6 @@ static spinlock_t buddy_lock = { .locked = false };
 static size_t total_buddy_pages;
 static unsigned max_buddy_order;
 static BuddyPage metadataStorage[HEAP_SIZE / PAGE_SIZE];
-
-static size_t order_size(const unsigned order) {
-    return PAGE_SIZE << order;
-}
 
 static unsigned ceil_log2_size(const size_t value) {
     if (value <= 1) {
@@ -47,7 +48,9 @@ static void *bump_alloc(size_t size) {
 
     const size_t aligned_offset = ALIGN_UP(heap_offset, alignof(max_align_t));
 
-    if (aligned_offset > heap_size || total > heap_size - aligned_offset) {
+    const size_t bump_limit = (size_t)BUMP_RESERVE_PAGES * PAGE_SIZE;
+
+    if (aligned_offset > bump_limit || total > bump_limit - aligned_offset) {
         return NULL;
     }
 
@@ -193,8 +196,12 @@ static void buddy_init(void) {
         metadata[i].state = BUDDY_STATE_USED;
     }
 
-    size_t remaining = total_buddy_pages;
-    size_t current = 0;
+    size_t remaining = (total_buddy_pages > BUMP_RESERVE_PAGES)
+                           ? total_buddy_pages - BUMP_RESERVE_PAGES
+                           : 0;
+    size_t current = (total_buddy_pages > BUMP_RESERVE_PAGES)
+                         ? BUMP_RESERVE_PAGES
+                         : total_buddy_pages;
 
     for (unsigned order = max_buddy_order; remaining > 0; ) {
         size_t block_size = 1u << order;
@@ -370,6 +377,11 @@ static void buddy_free(void *ptr) {
 
     size_t page_idx = buddy_page_idx(ptr);
 
+    if (page_idx < BUMP_RESERVE_PAGES) {
+        spinlock_unlock(&buddy_lock);
+        return;
+    }
+
     if (metadata[page_idx].state != BUDDY_STATE_USED) {
         spinlock_unlock(&buddy_lock);
         return;
@@ -416,6 +428,7 @@ void free_(void *ptr) {
     }
 
     if ((uintptr_t)ptr % PAGE_SIZE == 0 &&
+        buddy_page_idx(ptr) >= BUMP_RESERVE_PAGES &&
         buddy_page_idx(ptr) < total_buddy_pages &&
         metadata != NULL &&
         metadata[buddy_page_idx(ptr)].state == BUDDY_STATE_USED) {

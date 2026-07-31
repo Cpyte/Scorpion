@@ -45,7 +45,8 @@ static int write_super(void)
     super.data_start = data_start_block;
     super.reserved = 0;
 
-    for (unsigned i = 0; i < FUSE_MAX_FILES; i++) {
+    for (unsigned i = 0; i < FUSE_MAX_FD; i++) {
+        // ANother DUM DUM
         fd_table[i].used = false;
     }
 
@@ -59,9 +60,16 @@ static int read_super(FuseSuper *super)
 
 static int read_entry(unsigned idx, FuseEntry *entry)
 {
-    unsigned block = 1 + (idx * sizeof(FuseEntry)) / FLASH_BLOCK_SIZE;
+    const unsigned block = 1 + (idx * sizeof(FuseEntry)) / FLASH_BLOCK_SIZE;
+    const unsigned offset = (idx * sizeof(FuseEntry)) % FLASH_BLOCK_SIZE;
+    uint8_t buf[FLASH_BLOCK_SIZE];
 
-    return flash_read(block, entry, sizeof(FuseEntry));
+    //Hella we need update here~
+
+    if (flash_read(block, buf, FLASH_BLOCK_SIZE) < 0) return -1;
+    memcpy(entry, buf + offset, sizeof(FuseEntry));
+
+    return 0;
 }
 
 static int write_entry(unsigned idx, const FuseEntry *entry)
@@ -258,8 +266,6 @@ int fuse_read(int fd, void *buf, size_t size)
 int fuse_write(int fd, const void *buf, size_t size)
 {
     FuseEntry entry;
-    size_t total;
-    uint32_t file_pos;
     uint8_t block_buf[FLASH_BLOCK_SIZE];
 
     if (fd < 0 || fd >= (int)FUSE_MAX_FD) return -1;
@@ -267,8 +273,12 @@ int fuse_write(int fd, const void *buf, size_t size)
 
     read_entry((unsigned)fd_table[fd].entry_idx, &entry);
 
-    file_pos = fd_table[fd].offset;
-    total = 0;
+    uint32_t file_pos = fd_table[fd].offset;
+    size_t total = 0;
+
+    // Fixes again!
+    const uint32_t max_size = FUSE_BLOCKS_PER_FILE * FLASH_BLOCK_SIZE;
+    if (file_pos + size > max_size) return -1;
 
     while (size > 0) {
         unsigned data_block = (file_pos / FLASH_BLOCK_SIZE);

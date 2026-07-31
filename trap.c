@@ -171,8 +171,11 @@ void trap_handler(RiscVTrapFrame *frame)
 
             Process *new_proc = process_alloc();
             if (new_proc == NULL) {
-                if (evict_lowest_priority(sizeof(Process)) == 0)
-                    new_proc = process_alloc();
+                if (evict_lowest_priority(sizeof(Process)) != 0) {
+                    frame->a[0] = (uintptr_t)-2;
+                    break;
+                }
+                new_proc = process_alloc();
                 if (new_proc == NULL) {
                     frame->a[0] = (uintptr_t)-2;
                     break;
@@ -184,22 +187,27 @@ void trap_handler(RiscVTrapFrame *frame)
             int ret = loader_load(sef_data, sef_size, new_proc);
             if (ret != 0) {
                 size_t needed = new_proc->text_size + new_proc->data_size + new_proc->bss_size;
-                free_(new_proc);
-                if (needed > 0 && evict_lowest_priority(needed) == 0) {
-                    new_proc = process_alloc();
-                    if (new_proc == NULL) {
-                        frame->a[0] = (uintptr_t)-2;
-                        break;
-                    }
-                    new_proc->pid = next_pid++;
-                    ret = loader_load(sef_data, sef_size, new_proc);
+                if (needed == 0 || evict_lowest_priority(needed) != 0) {
+                    free_(new_proc);
+                    frame->a[0] = (uintptr_t)-3;
+                    break;
                 }
-            }
 
-            if (ret != 0) {
-                free_(new_proc);
-                frame->a[0] = (uintptr_t)-3;
-                break;
+                Process *retry = process_alloc();
+                if (retry == NULL) {
+                    free_(new_proc);
+                    frame->a[0] = (uintptr_t)-2;
+                    break;
+                }
+                retry->pid = next_pid++;
+                ret = loader_load(sef_data, sef_size, retry);
+                if (ret != 0) {
+                    free_(retry);
+                    free_(new_proc);
+                    frame->a[0] = (uintptr_t)-3;
+                    break;
+                }
+                new_proc = retry;
             }
 
             add_process(new_proc, priority);

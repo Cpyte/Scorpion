@@ -14,6 +14,10 @@
 
 #define MAX_FORMATS    8
 
+/* Reserve this many bytes above the loaded segments for the process stack,
+ * so stack growth never corrupts the code/data/BSS. */
+#define USER_STACK_SIZE 4096u
+
 typedef struct {
     uint8_t  ident[16];
     uint16_t type;
@@ -50,7 +54,7 @@ MemoryRegion controller_region;
 
 static int elf_probe(const void *data, size_t size)
 {
-    (void)size;
+    if (size < 4) return -1;
     return (*(const uint32_t *)data == ELF_MAGIC) ? 0 : -1;
 }
 
@@ -68,14 +72,23 @@ static int elf_load(const void *data, size_t size, Process *proc)
 
     const Elf32Phdr *phdr = (const Elf32Phdr *)((const uint8_t *)data + ehdr->phoff);
 
-    size_t total_mem = 0;
+    uint32_t first_vaddr = 0;
+    uint32_t max_end = 0;
+    bool have_load = false;
     for (unsigned i = 0; i < ehdr->phnum; i++) {
         if (phdr[i].type != ELF_PT_LOAD) continue;
-        total_mem += phdr[i].memsz;
+        if (phdr[i].memsz == 0) continue;
+        if (phdr[i].vaddr + phdr[i].memsz < phdr[i].vaddr) return -1;
+        if (!have_load || phdr[i].vaddr < first_vaddr) first_vaddr = phdr[i].vaddr;
+        if (phdr[i].vaddr + phdr[i].memsz > max_end) max_end = phdr[i].vaddr + phdr[i].memsz;
+        have_load = true;
     }
-    if (total_mem == 0) return -1;
+    if (!have_load) return -1;
+    if (ehdr->entry < first_vaddr || ehdr->entry >= max_end) return -1;
 
-    uint8_t *base = ualloc_(total_mem);
+    size_t total_mem = (size_t)(max_end - first_vaddr);
+
+    uint8_t *base = ualloc_(total_mem + USER_STACK_SIZE);
     if (base == NULL) return -1;
 
     proc->alloc_base = (uintptr_t)base;
@@ -86,7 +99,6 @@ static int elf_load(const void *data, size_t size, Process *proc)
     proc->bss_base = 0;
     proc->bss_size = 0;
 
-    size_t offset = 0;
     for (unsigned i = 0; i < ehdr->phnum; i++) {
         if (phdr[i].type != ELF_PT_LOAD) continue;
         if (phdr[i].memsz == 0) continue;
@@ -97,7 +109,7 @@ static int elf_load(const void *data, size_t size, Process *proc)
             return -1;
         }
 
-        uint8_t *seg = base + offset;
+        uint8_t *seg = base + (phdr[i].vaddr - first_vaddr);
         if (phdr[i].filesz > 0)
             memcpy(seg, (const uint8_t *)data + phdr[i].offset, phdr[i].filesz);
         if (phdr[i].memsz > phdr[i].filesz)
@@ -111,14 +123,13 @@ static int elf_load(const void *data, size_t size, Process *proc)
             proc->data_base = (uintptr_t)seg;
             proc->data_size = phdr[i].memsz;
         }
-
-        offset += phdr[i].memsz;
     }
 
-    proc->context.pc = ehdr->entry;
+    proc->context.pc = (uintptr_t)base + (ehdr->entry - first_vaddr);
     proc->context.ra = 0;
-    proc->context.sp = ((uintptr_t)base + total_mem) & ~(uintptr_t)0xF;
+    proc->context.sp = ((uintptr_t)base + total_mem + USER_STACK_SIZE) & ~(uintptr_t)0xF;
     proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
+    proc->stack_size = USER_STACK_SIZE;
     for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
     proc->context.gp = 0;
     proc->context.tp = 0;
@@ -153,7 +164,7 @@ static int sef_load(const void *data, size_t size, Process *proc)
     }
     if (total == 0) return -1;
 
-    uint8_t *base = ualloc_(total);
+    uint8_t *base = ualloc_(total + USER_STACK_SIZE);
     if (base == NULL) return -1;
 
     proc->alloc_base = (uintptr_t)base;
@@ -193,7 +204,7 @@ static int sef_load(const void *data, size_t size, Process *proc)
     proc->context.pc = (uintptr_t)base + hdr->entry;
     proc->context.gp = (uintptr_t)base;
 
-    uintptr_t stack_top = (uintptr_t)base + total;
+    uintptr_t stack_top = (uintptr_t)base + total + USER_STACK_SIZE;
     stack_top &= ~(uintptr_t)0xF;
     proc->context.sp = stack_top;
 
@@ -207,6 +218,7 @@ static int sef_load(const void *data, size_t size, Process *proc)
         proc->privilege = PRIV_USER;
     }
     proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
+    proc->stack_size = USER_STACK_SIZE;
 
     proc->state = PROCESS_READY;
     proc->context_initialized = true;
@@ -215,13 +227,14 @@ static int sef_load(const void *data, size_t size, Process *proc)
 
 static int bin_load(const void *data, size_t size, Process *proc)
 {
-    uint8_t *copy = ualloc_(size);
+    uint8_t *copy = ualloc_(size + USER_STACK_SIZE);
     if (copy == NULL) return -1;
 
     memcpy(copy, data, size);
     proc->alloc_base = (uintptr_t)copy;
     proc->text_base = (uintptr_t)copy;
     proc->text_size = size;
+    proc->stack_size = USER_STACK_SIZE;
     proc->state = PROCESS_READY;
     proc->context_initialized = true;
     return 0;
@@ -278,7 +291,8 @@ int process_load_binary(const void *data, size_t size,
     if (ret == 0) {
         proc->context.pc = entry_addr;
         proc->context.ra = 0;
-        proc->context.sp = ((uintptr_t)proc->text_base + proc->text_size) & ~(uintptr_t)0xF;
+        proc->context.sp = ((uintptr_t)proc->text_base + proc->text_size +
+                            USER_STACK_SIZE) & ~(uintptr_t)0xF;
         proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
         for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
         proc->context.gp = 0;

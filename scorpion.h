@@ -114,8 +114,8 @@ typedef enum {
 } ProcessState;
 
 typedef struct {
-    uintptr_t ra;
     uintptr_t pc;
+    uintptr_t ra;
     uintptr_t sp;
     uintptr_t gp;
     uintptr_t tp;

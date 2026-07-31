@@ -62,6 +62,7 @@ static void init_process(void *argument)
 
 static void kernel_main(void)
 {
+    console_init();
     log_info("Scorpion kernel booting on RISC-V");
 
     alloc_init();

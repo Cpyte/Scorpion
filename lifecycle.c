@@ -93,7 +93,7 @@ void scheduler_init(void)
     Process *idle = alloc_(sizeof(Process));
 
     idle->pid = 0;
-    idle->state = PROCESS_UNUSED;
+    idle->state = PROCESS_READY;
     idle->privilege = PRIV_KERNEL;
     idle->entry = idle_process;
     idle->argument = NULL;
@@ -220,8 +220,10 @@ int process_terminate(Process *proc)
 
     if (proc->alloc_base)
         ufree_((void *)proc->alloc_base);
-    if (proc->stack_base)
+    if (proc->stack_base) {
         ufree_(proc->stack_base);
+        free_(proc->stack_base);
+    }
 
     proc->alloc_base = 0;
     proc->text_base = 0;
@@ -334,7 +336,8 @@ void timer_irq(void)
 {
     uint64_t now = timer_read();
     timer_set_cmp(now + TIMER_INTERVAL);
-    yield();
+    if (current_process[current_core_id()] != NULL)
+        yield();
 }
 
 void yield(void)
