@@ -104,8 +104,8 @@ palloc_error_t palloc_free_region(uintptr_t start, size_t count) {
         return PALLOC_ERR_INVALID_ADDR;
     }
 
-    size_t start_page = addr_to_page(start);
-    size_t end_page   = start_page + count;
+    const size_t start_page = addr_to_page(start);
+    const size_t end_page   = start_page + count;
 
     if (end_page > palloc_state.total_pages || !is_in_range(start)) {
         return PALLOC_ERR_INVALID_ADDR;

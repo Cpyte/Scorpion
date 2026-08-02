@@ -169,6 +169,8 @@ void context_switch(RiscVContext *old, RiscVContext *next);
 #define MAX_CORES 4u
 
 unsigned current_core_id(void);
+void smp_launch_core1(void (*entry)(void), uintptr_t sp);
+void core1_main(void);
 
 extern Process *current_process[MAX_CORES];
 
@@ -209,6 +211,9 @@ extern CoreScheduler scheduler[MAX_CORES];
 void scheduler_init(void);
 void scheduler_start(void);
 void scheduler_entry(void);
+void scheduler_start_core(void);
+
+void timer_enable(void);
 
 void add_process(Process *proc, uint16_t priority);
 int runprocess(void);

@@ -89,6 +89,7 @@ add_executable(WEW_scorpion
     lifecycle.c
     loader.c
     context.c
+    smp.c
     trap.c
     console.c
     driver.c

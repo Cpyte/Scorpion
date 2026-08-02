@@ -71,7 +71,7 @@ static void idle_process(void *argument)
     }
 }
 
-void scheduler_init(void)
+static void scheduler_context_init(void)
 {
     const unsigned core = current_core_id();
     uintptr_t stack_top;
@@ -89,8 +89,15 @@ void scheduler_init(void)
     for (unsigned i = 0; i < 12; i++) {
         scheduler[core].context.s[i] = 0;
     }
+}
 
-    Process *idle = alloc_(sizeof(Process));
+void scheduler_init(void)
+{
+    Process *idle;
+
+    scheduler_context_init();
+
+    idle = alloc_(sizeof(Process));
 
     idle->pid = 0;
     idle->state = PROCESS_READY;
@@ -109,6 +116,14 @@ void scheduler_start(void)
     const unsigned core = current_core_id();
 
     context_switch(NULL, &scheduler[core].context);
+}
+
+/* Called by a secondary core: give it its own scheduler context (the idle
+ * process already exists in the shared queue) and start it scheduling. */
+void scheduler_start_core(void)
+{
+    scheduler_context_init();
+    scheduler_start();
 }
 
 void scheduler_entry(void)
@@ -314,6 +329,19 @@ static inline void timer_set_cmp(uint64_t cmp)
     sio[SIO_MTIMECMP / 4]  = (uint32_t)(cmp & 0xffffffffu);
 }
 
+/* Per-core part: arm this core's comparator and enable its timer interrupt.
+ * MTIME is shared, but MTIMECMP and MIE are per-core, so each core must call
+ * this for itself. */
+void timer_enable(void)
+{
+    timer_set_cmp(timer_read() + TIMER_INTERVAL);
+
+    uint32_t mie;
+    __asm__ volatile ("csrr %0, 0x304" : "=r"(mie));
+    mie |= 0x80u;
+    __asm__ volatile ("csrw 0x304, %0" : : "r"(mie));
+}
+
 void timer_init(void)
 {
     volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
@@ -324,12 +352,7 @@ void timer_init(void)
     sio[SIO_MTIMEH / 4] = 0;
     sio[SIO_MTIME / 4] = 0;
 
-    timer_set_cmp(TIMER_INTERVAL);
-
-    uint32_t mie;
-    __asm__ volatile ("csrr %0, 0x304" : "=r"(mie));
-    mie |= 0x80u;
-    __asm__ volatile ("csrw 0x304, %0" : : "r"(mie));
+    timer_enable();
 }
 
 void timer_irq(void)

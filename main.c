@@ -100,6 +100,11 @@ static void kernel_main(void)
     scheduler_init();
     log_info("scheduler initialized");
 
+    smp_launch_core1(core1_main,
+                     ((uintptr_t)scheduler[1].stack + PROCESS_STACK_SIZE)
+                     & ~(uintptr_t)0xF);
+    log_info("secondary core started");
+
     driver_print_all();
 
     log_info("starting scheduler");

@@ -69,6 +69,8 @@ void console_putchar(char c)
     uart_putchar(c);
 }
 
+// Man, pieces of software these days are full of potatoes!
+
 void console_write(const char *s, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
