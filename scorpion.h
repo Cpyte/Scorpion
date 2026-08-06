@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "sef.h"
+
 #define IPC_MAX_DATA     64
 #define IPC_QUEUE_DEPTH  16
 
@@ -123,6 +125,28 @@ typedef struct {
     uintptr_t mstatus;
 } RiscVContext;
 
+typedef struct {
+    uint32_t type;
+    uint32_t slot;
+    char    *name;
+    uint32_t name_len;
+} SefImportEntry;
+
+typedef struct {
+    uint32_t value;
+    char    *name;
+    uint32_t name_len;
+} SefExportEntry;
+
+typedef struct {
+    uint8_t *base;
+    uint16_t export_count;
+    uint16_t import_count;
+    SefExportEntry *exports;
+    SefImportEntry *imports;
+    uint8_t *alloc_ptr;
+} LoadedLib;
+
 typedef struct Process {
     uint32_t pid;
     ProcessState state;
@@ -148,6 +172,12 @@ typedef struct Process {
     uintptr_t bss_base;
     size_t bss_size;
     spinlock_t msg_lock;
+    SefImportEntry *imports;
+    uint16_t import_count;
+    SefExportEntry *exports;
+    uint16_t export_count;
+    LoadedLib libs[SEF_MAX_LIBS];
+    uint16_t lib_count;
 } Process;
 
 typedef struct {

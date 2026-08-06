@@ -23,4 +23,8 @@ int process_load_elf(const void *elf_data, size_t elf_size, Process *proc);
 int process_load_binary(const void *data, size_t size,
                         uintptr_t entry_addr, Process *proc);
 
+/* SEF v2 dynamic linking */
+int process_load_lib(Process *proc, const void *data, size_t size);
+void process_free_libs(Process *proc);
+
 #endif

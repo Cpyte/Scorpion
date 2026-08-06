@@ -18,6 +18,7 @@
 #define SYS_PUTC      11
 #define SYS_SPAWN     12
 #define SYS_TERMINATE 13
+#define SYS_LOADLIB   14
 
 extern void ecall_trigger(void);
 
@@ -50,6 +51,7 @@ static const char *syscall_name(unsigned n)
         [SYS_PUTC]  = "PUTC",
         [SYS_SPAWN] = "SPAWN",
         [SYS_TERMINATE] = "TERMINATE",
+        [SYS_LOADLIB] = "LOADLIB",
     };
 
     if (n < sizeof(names) / sizeof(names[0]) && names[n] != NULL) {
@@ -234,6 +236,22 @@ void trap_handler(RiscVTrapFrame *frame)
             }
             int ret = process_terminate(target);
             frame->a[0] = (uintptr_t)ret;
+            break;
+        }
+
+        case SYS_LOADLIB: {
+            if (cur == NULL || cur->privilege > PRIV_CONTROLLER) {
+                frame->a[0] = (uintptr_t)-1;
+                break;
+            }
+            const void *data = (const void *)frame->a[0];
+            size_t size = frame->a[1];
+            if (size < 12 || !is_user_range(cur, data, size)) {
+                frame->a[0] = (uintptr_t)-2;
+                break;
+            }
+            int lib_id = process_load_lib(cur, data, size);
+            frame->a[0] = (uintptr_t)lib_id;
             break;
         }
 

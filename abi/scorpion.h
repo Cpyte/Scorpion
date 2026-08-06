@@ -18,6 +18,7 @@
 #define SYS_PUTC      11
 #define SYS_SPAWN     12
 #define SYS_TERMINATE 13
+#define SYS_LOADLIB   14
 
 static inline void scorpion_yield(void)
 {
@@ -135,6 +136,15 @@ static inline int scorpion_terminate(unsigned pid)
     register unsigned a7 asm("a7") = SYS_TERMINATE;
     __asm__ volatile ("ecall" : "+r"(a0) : "r"(a7) : "memory");
     return (int)a0;
+}
+
+static inline int scorpion_loadlib(const void *sef_data, unsigned size)
+{
+    register const void *a0 asm("a0") = sef_data;
+    register unsigned a1 asm("a1") = size;
+    register unsigned a7 asm("a7") = SYS_LOADLIB;
+    __asm__ volatile ("ecall" : "+r"(a0) : "r"(a1), "r"(a7) : "memory");
+    return (int)(size_t)a0;
 }
 
 #endif

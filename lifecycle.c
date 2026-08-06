@@ -2,6 +2,7 @@
 #include <limits.h>
 
 #include "alloc.h"
+#include "loader.h"
 #include "scorpion.h"
 
 ProcessQueue queue;
@@ -213,6 +214,7 @@ int killprocess(void)
                 ufree_(p->process->stack_base);
                 free_(p->process->stack_base);
             }
+            process_free_libs(p->process);
             free_(p->process);
             free_(p);
 
@@ -239,6 +241,7 @@ int process_terminate(Process *proc)
         ufree_(proc->stack_base);
         free_(proc->stack_base);
     }
+    process_free_libs(proc);
 
     proc->alloc_base = 0;
     proc->text_base = 0;

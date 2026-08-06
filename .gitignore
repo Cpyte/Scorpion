@@ -8,4 +8,5 @@ build*/
 *.swp
 *.swo
 .DS_Store
+__pycache__/
 pico-sdk-2.3.0*/
