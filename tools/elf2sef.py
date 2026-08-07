@@ -242,23 +242,31 @@ def main(argv):
     flags = 0
     exports = []
     export_file = None
+    positionals = []
     args = list(argv)
 
-    while args and args[0].startswith('--'):
-        opt = args.pop(0)
+    i = 0
+    while i < len(args):
+        opt = args[i]
         if opt == '--flags':
-            flags = int(args.pop(0), 0)
+            flags = int(args[i + 1], 0)
+            i += 2
         elif opt == '--export':
-            exports.append(args.pop(0))
+            exports.append(args[i + 1])
+            i += 2
         elif opt == '--export-file':
-            export_file = args.pop(0)
-        else:
+            export_file = args[i + 1]
+            i += 2
+        elif opt.startswith('--'):
             sys.exit(f'error: unknown option {opt}')
+        else:
+            positionals.append(opt)
+            i += 1
 
-    if len(args) != 2:
+    if len(positionals) != 2:
         sys.exit(__doc__)
 
-    elf_path, sef_path = args
+    elf_path, sef_path = positionals
     elf = parse_elf(elf_path)
     flat = elf['flat']
     base = elf['base']
