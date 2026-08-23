@@ -48,7 +48,7 @@ static void *bump_alloc(size_t size) {
 
     const size_t aligned_offset = ALIGN_UP(heap_offset, alignof(max_align_t));
 
-    const size_t bump_limit = (size_t)BUMP_RESERVE_PAGES * PAGE_SIZE;
+    const size_t bump_limit = BUMP_RESERVE_PAGES * PAGE_SIZE;
 
     if (aligned_offset > bump_limit || total > bump_limit - aligned_offset) {
         return NULL;
@@ -59,7 +59,7 @@ static void *bump_alloc(size_t size) {
     header->next = NULL;
     heap_offset = aligned_offset + total;
 
-    return (void *)((uint8_t *)header + ALLOC_HEADER_SIZE);
+    return (uint8_t *)header + ALLOC_HEADER_SIZE;
 }
 
 static void *list_alloc(size_t size) {

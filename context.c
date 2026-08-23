@@ -5,6 +5,13 @@ Process *current_process[MAX_CORES];
 
 unsigned current_core_id(void)
 {
+#if defined(__xtensa__)
+    /* PRID[3:0] carries the core number on single- and multi-core
+     * Xtensa parts alike. */
+    uint32_t prid;
+    __asm__ volatile ("rsr.prid %0" : "=r"(prid));
+    return (unsigned)(prid & 0xFu);
+#else
     uintptr_t hart_id;
 
     __asm__ volatile (
@@ -13,6 +20,7 @@ unsigned current_core_id(void)
     );
 
     return (unsigned)hart_id;
+#endif
 }
 
 static void process_trampoline(void)
@@ -27,21 +35,30 @@ static void process_trampoline(void)
     process_exit();
 
     for (;;) {
-        __asm__ volatile ("wfi");
+        ARCH_IDLE();
     }
 }
 
 static void init_context_regs(Process *process, uintptr_t pc, uintptr_t sp,
                                uint32_t mstatus)
 {
+#if defined(__xtensa__)
+    (void)mstatus;
+#endif
     process->context.pc = pc;
-    process->context.ra = 0;
     process->context.sp = sp;
+#if defined(__xtensa__)
+    /* call0: nothing else is live across a switch. */
+    for (unsigned i = 0; i < 4; i++)
+        process->context.s[i] = 0;
+#else
+    process->context.ra = 0;
     process->context.gp = 0;
     process->context.tp = 0;
     for (unsigned i = 0; i < 12; i++)
         process->context.s[i] = 0;
     process->context.mstatus = mstatus;
+#endif
     process->state = PROCESS_READY;
     process->context_initialized = true;
 }

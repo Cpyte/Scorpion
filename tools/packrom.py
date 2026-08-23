@@ -7,10 +7,10 @@ Flash layout:
    0x00010000  [4-byte size][controller sef]  (read via XIP by init)
 """
 
+import os
 import struct
 import subprocess
 import sys
-import os
 import tempfile
 
 UF2_MAGIC_START = 0x0A324655

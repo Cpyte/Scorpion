@@ -1,20 +1,27 @@
-# Scorpion — Bare-Metal Kernel for Microcontrollers (which we don't have other than pico)
+# Scorpion — Bare-Metal Kernel for Microcontrollers
 
-Scorpion is a cooperative-multitasking, single-address-space kernel for the
-Raspberry Pi RP2350 microcontroller running in **RISC-V 32-bit mode**
-(RV32IMAC + bit‑manipulation extensions, Hazard3 cores). It provides a
+Scorpion is a cooperative-multitasking, single-address-space kernel for
+microcontrollers with 32-bit RISC-V machine-mode cores — plus one Xtensa
+port. It currently runs on the **Raspberry Pi RP2350** (RV32IMAC+Zb*
+Hazard3 cores) and, in an experimental capacity, on the **ESP32-C3**
+(RV32IMC) and **ESP32-S3** (Xtensa LX7, call0 ABI). It provides a
 minimal system-call interface, a hierarchical heap allocator, a bitmap-based
-physical page allocator, a FUSE-like filesystem on the RP2350's external QSPI
-flash, an ELF loader, and a driver registration framework — all from scratch
+physical page allocator, a FUSE-like filesystem on external QSPI
+flash (RP2350) or mask-ROM spiflash (ESP32-C3/S3), an ELF/SEF loader, and a driver registration framework — all from scratch
 with no external library dependencies.
+
+Platform-specific code lives behind one small contract (`platform.h`); see
+[docs/platforms.md](docs/platforms.md) for the support matrix and
+[docs/porting.md](docs/porting.md) to bring up a new chip.
 
 ---
 
 ## Table of Contents
 
-- [Scorpion — Bare-Metal Kernel for Raspberry Pi RP2350 (RISC-V)](#scorpion--bare-metal-kernel-for-raspberry-pi-rp2350-riscv)
+- [Scorpion — Bare-Metal Kernel for Microcontrollers](#scorpion--bare-metal-kernel-for-microcontrollers)
   - [Table of Contents](#table-of-contents)
   - [Architecture Overview](#architecture-overview)
+  - [Supported Platforms](#supported-platforms)
   - [Build System \& Pico SDK Integration](#build-system--pico-sdk-integration)
     - [Configuration](#configuration)
     - [Build](#build)
@@ -84,9 +91,12 @@ Just read these diagrams.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> **Note:** Currently only the Raspberry Pi Pico 2 (RP2350 RISC-V) is
-> supported. Support for other microcontrollers and architectures is planned
-> for future releases (FOR REAL!!!!!).
+> **Note:** The Raspberry Pi Pico 2 (RP2350 RISC-V) is the stable target.
+> The ESP32-C3 (RISC-V) and ESP32-S3 (Xtensa LX7) are supported
+> experimentally — boot, scheduler, IPC, syscalls and flash-backed FUSE
+> work; hardware user protection does not (neither chip offers a
+> RISC-V-style PMP, and the S3 port runs all processes in ring 0). See
+> [docs/platforms.md](docs/platforms.md) for the full status matrix.
 
 Scorpion is a **cooperative single-address-space** kernel :(:
 - Kernel code runs in machine mode (M-mode); user processes run in user mode (U-mode).
@@ -97,13 +107,31 @@ Scorpion is a **cooperative single-address-space** kernel :(:
   preemptive time-slicing even in a cooperative design.
 - The scheduler is priority-ordered round-robin; a higher-priority process
   runs before a lower-priority one, and the idle process (lowest priority)
-  executes `wfi` when nothing else is ready.
+  executes the architecture idle instruction (`wfi` / Xtensa `waiti`)
+  when nothing else is ready.
 - Executables are loaded through a pluggable format interface; built-in
   loaders include **SEF** (Scorpion's native format), ELF, and flat binary.
 - **PMP** (Physical Memory Protection) restricts U-mode access to a dedicated
   user arena. Kernel memory, peripheral MMIO, and flash are inaccessible to user
   code, enforced via RISC-V PMP TOR entries at boot.
   There is no virtual memory. Very complicated, but logically consistent.
+
+---
+
+## Supported Platforms
+
+| Platform | Board | ISA | Status |
+|----------|-------|-----|--------|
+| `rp2350` | Raspberry Pi Pico 2 | RV32IMAC(B) Hazard3 | stable (2 cores, PMP, flash/FUSE) |
+| `esp32c3` | ESP32-C3 dev boards | RV32IMC | experimental (single core, ROM-spiflash FUSE, no PMP) |
+| `esp32s3` | ESP32-S3 dev boards | Xtensa LX7 (call0) | experimental (single core used, ROM-spiflash FUSE, ring 0) |
+
+Full details, caveats and bring-up checklists: [docs/platforms.md](docs/platforms.md).
+Adding a new chip: [docs/porting.md](docs/porting.md).
+
+Xtensa-family ESP32 / S2 / S3 would require an `arch/xtensa` CPU port
+(new context-switch and trap assembly for the windowed ABI) and are not
+planned in the near term.
 
 ---
 
@@ -139,16 +167,27 @@ libraries, startup code, or linker scripts.
 ### Configuration
 
 ```bash
-cmake -B build -G Ninja .
+# RP2350 (default)
+cmake -B build .
+
+# ESP32-C3
+cmake -B build-c3 -DPLATFORM=esp32c3 .
+
+# ESP32-S3 (needs xtensa-esp32s3-elf-gcc, e.g. under ~/xtensa-tools/)
+cmake -B build-s3 -DPLATFORM=esp32s3 .
 ```
 
-The `pico_sdk_import.cmake` script automatically picks up the vendored SDK
-at `pico-sdk-2.3.0/`. If you've installed the SDK elsewhere, set
-`PICO_SDK_PATH` before configuring:
+For the rp2350 target, the `pico_sdk_import.cmake` script automatically
+picks up the vendored SDK at `pico-sdk-2.3.0/`. If you've installed the
+SDK elsewhere, set `PICO_SDK_PATH` before configuring:
 
 ```bash
-PICO_SDK_PATH=/path/to/pico-sdk cmake -B build -G Ninja .
+PICO_SDK_PATH=/path/to/pico-sdk cmake -B build -DPLATFORM=rp2350 .
 ```
+
+If no 32-bit RISC-V triple is installed, the build falls back to any
+RV32-capable GCC (e.g. homebrew's `riscv64-elf-gcc`) with the Hazard3
+flags applied manually.
 
 ### Build
 
@@ -156,7 +195,7 @@ PICO_SDK_PATH=/path/to/pico-sdk cmake -B build -G Ninja .
 cmake --build build
 ```
 
-### Outputs
+### Outputs (rp2350)
 
 | File                  | Description                             |
 |-----------------------|-----------------------------------------|
@@ -166,6 +205,20 @@ cmake --build build
 | `build/scorpion.map`   | Linker map with symbol addresses       |
 | `build/controller.sef` | Controller process in SEF format    |
 | `build/test_user.sef` | Test user process in SEF format     |
+
+### Outputs (esp32c3)
+
+| File                        | Description                              |
+|-----------------------------|------------------------------------------|
+| `build-c3/WEW_scorpion`     | ELF executable (kernel, RAM-run layout)  |
+| `build-c3/Scorpion_esp32c3.bin` | ESP image — flash at offset `0x0` via esptool |
+
+### Outputs (esp32s3)
+
+| File                        | Description                              |
+|-----------------------------|------------------------------------------|
+| `build-s3/WEW_scorpion`     | ELF executable (kernel, Xtensa call0, RAM-run) |
+| `build-s3/Scorpion_esp32s3.bin` | ESP image (chip_id 9) — flash at offset `0x0` via esptool |
 
 ---
 
@@ -273,7 +326,7 @@ heap allocator).
 - **`add_process(proc, priority)`** — inserts a process into a priority-ordered
   doubly-linked list (lower numeric = higher priority, `UINT16_MAX` = idle).
 - **`scheduler_init()`** — sets up the scheduler stack and context, creates the
-  idle process (executes `wfi` + `yield`).
+  idle process (executes the idle instruction + `yield`).
 - **`scheduler_start()`** — context-switches from `main()` into the scheduler.
 - **`scheduler_entry()`** — the scheduler loop: reap terminated processes,
   then run the next ready process.
@@ -331,11 +384,14 @@ Machine-mode trap handling:
     `RiscVTrapFrame` (140 bytes) on the stack.
   - Calls `trap_handler(frame)`.
   - Restores registers and executes `mret`.
-- **`trap_handler`** (C in `trap.c`):
-  - On machine timer IRQ (mcause=0x80000007): sets new `mtimecmp` and calls
-    `yield()` to preempt the running process.
-  - On `ecall` (mcause=11): dispatches by syscall number in `a7`.
-  - On any other exception: calls `panic()`.
+- **`trap_handler`** (C in `trap.c`, shared across architectures):
+  - Timer interrupts are recognized via `platform_timer_is_irq()`
+    (each platform publishes its own synthesized mcause): re-arms the
+    comparator and calls `yield()` to preempt the running process.
+  - On `ecall`/`syscall`: dispatches by syscall number (RV32: `a7`;
+    Xtensa: `a2`) through the arch-neutral `TRAP_*` macros.
+  - On any other exception: kills the faulting user process or calls
+    `panic()`.
 
 **System calls (14 total):**
 
@@ -380,20 +436,23 @@ A generic driver registration and I/O framework:
 
 ### 9. Flash Storage (`flash.c`)
 
-- RP2350 external QSPI flash, accessed via XIP reads (`0x10000000`) and
-  bootrom function table for erase/program.
-- 256 blocks × 256 bytes = 64 KB total.
+- Platform backends behind a common interface: RP2350 uses XIP reads
+  (`0x10000000`) plus bootrom function table for erase/program; ESP32-C3
+  and ESP32-S3 use the legacy SPI-flash driver in mask ROM.
+- 256 blocks × 256 bytes = 64 KB total, mapped at device offset
+  `FLASH_STORAGE_OFFSET` (rp2350: `0x20000`, esp32c3/s3: `0x10000`) so FUSE
+  can never clobber the boot image or embedded payloads.
 - `flash_read()`, `flash_write()`, `flash_erase()` — block-oriented operations.
 - `flash_write()` automatically erases the containing 4 KB sector before
   programming (NOR flash requires erase-to-ones before write).
 - Erase uses 4 KB sector granularity (bootrom `flash_range_erase` with
   `FLASH_SECTOR_SIZE`).
-- Bootrom functions located by code lookup (`ROM_CODE('R', 'E')`, etc.)
+- RP2350 bootrom functions located by code lookup (`ROM_CODE('R', 'E')`, etc.)
   through the RP2350's `rom_table_lookup`.
 
 ### 10. FUSE Filesystem (`fuse.c`)
 
-A simple flat filesystem layered on the QSPI flash:
+A simple flat filesystem layered on the platform flash backend:
 
 - **Superblock** (block 0): magic number (`0x53434653`), entry count, data start.
 - **Directory entries**: up to 16 files, 24-character names, size, first block, mode.
@@ -453,15 +512,19 @@ Header for user-space programs compiled against the Scorpion kernel:
 
 - Defines syscall numbers as macros.
 - Provides inline-assembly wrappers for each syscall using RISC-V register
-  conventions (`a7` = syscall number, arguments in `a0`–`a5`).
+  conventions (`a7` = syscall number, arguments in `a0`–`a5`). The S3
+  port has no SEF dynamic linking yet, so RV32 payloads are not built
+  for it; kernel-side dispatch is architecture-neutral via the `TRAP_*`
+  macros in `scorpion.h`.
 
 ---
 
 ## RP2350 Platform Details
 
-Scorpion targets the **Raspberry Pi RP2350** microcontroller in **RISC-V
+Scorpion's stable target is the **Raspberry Pi RP2350** in **RISC-V
 mode**, where the two CPU cores implement the **Hazard3** RISC-V ISA
-(RV32IMAC). We'll get to others. Well, pretty soon (sigh).
+(RV32IMAC). Other platforms (ESP32-C3 and ESP32-S3 today) are documented in
+[docs/platforms.md](docs/platforms.md).
 
 Key RP2350 features relevant to Scorpion:
 
@@ -487,38 +550,60 @@ bit-manipulation instructions okay?
 ## Project Structure (complicated)
 
 ```
-├── CMakeLists.txt              # Build: uses Pico SDK for toolchain
+├── CMakeLists.txt              # Build: PLATFORM=rp2350 | esp32c3
 ├── README.md                   # This file
+├── platform.h                  # Hardware abstraction contract (see docs/porting.md)
 ├── scorpion.h                  # Master kernel header (types, IPC, scheduler API)
-├── scorpion.h                   # Master kernel header (types, IPC, scheduler API, CSRs)
-├── sef.h                      # SEF executable format struct definitions + PMP constants
-├── main.c                       # Kernel entry: boots subsystems, spawns init, starts scheduler
-├── alloc.c / alloc.h             # Heap allocator (bump + free-list + buddy)
-├── palloc.c                     # Physical page allocator (bitmap-based)
-├── lifecycle.c                  # Process scheduler, timer, yield, block, wake, kill
-├── context.c                    # Context init, current_core_id(), trampoline
-├── trap.c                       # Syscall dispatcher + timer IRQ handler
-├── console.c / console.h         # UART PL011 driver + GPIO init + formatted logging
-├── driver.c / driver.h           # Driver registration framework + stage buffers
-├── flash.c / flash.h             # QSPI flash driver (bootrom table lookup + XIP)
-├── fuse.c / fuse.h               # FUSE filesystem on flash
-├── loader.c / loader.h           # Pluggable executable loader (SEF, ELF, binary)
+├── sef.h                       # SEF executable format struct definitions + PMP constants
+├── main.c                      # Kernel entry: boots subsystems, spawns init, starts scheduler
+├── alloc.c / alloc.h           # Heap allocator (bump + free-list + buddy)
+├── palloc.c                    # Physical page allocator (bitmap-based)
+├── lifecycle.c                 # Process scheduler, yield, block, wake, kill
+├── context.c                   # Context init, current_core_id(), trampoline
+├── trap.c                      # Syscall dispatcher + fault handling
+├── console.c / console.h       # Formatting/logging (hardware via platform layer)
+├── driver.c / driver.h         # Driver registration framework + stage buffers
+├── flash.c                     # Generic block layer over platform flash primitives
+├── fuse.c / fuse.h             # FUSE filesystem on flash
+├── loader.c / loader.h         # Pluggable executable loader (SEF, ELF, binary)
+├── platform/
+│   ├── rp2350/                 # Stable target: uart, SIO timer, SMP handshake,
+│   │                           # bootrom flash, PMP, XIP payload reader
+│   ├── esp32c3/                # Experimental: ROM UART0, SYSTIMER+INTC timer,
+│   │                           # ROM spiflash flash, single-core stubs,
+│   │                           # atomic compat shim
+│   └── esp32s3/                # Experimental: ROM UART0, SYSTIMER + interrupt
+│                               # matrix timer, ROM spiflash, single-core stub
 ├── arch/
-│   └── riscv32/
-│       ├── crt0.S                # C runtime: reset vector, data/BSS init
-│       ├── context.S             # Context switch assembly (saves mstatus)
-│       ├── trap.S                # Trap vector, full frame save/restore
-│       └── kernel.ld             # Linker script (SRAM layout)
+│   ├── riscv32/
+│   │   ├── crt0.S              # C runtime: reset vector, data/BSS init
+│   │   ├── context.S           # Context switch assembly (saves mstatus)
+│   │   ├── trap.S              # Trap vector, full frame save/restore
+│   │   ├── kernel.ld           # rp2350 linker script (SRAM layout)
+│   │   └── kernel_esp32c3.ld   # esp32c3 linker script (IRAM/DRAM, RAM-run)
+│   └── xtensa/
+│       ├── crt0.S              # Reset entry: VECBASE, BSS init (call0 ABI)
+│       ├── context.S           # Context switch ({pc, sp, a12–a15})
+│       ├── vectors.S           # VECBASE table + trap entry/exit (rfe)
+│       ├── trap.c              # trap_init() — re-asserts VECBASE
+│       ├── runtime_helpers.c   # div/mod/clz/shifts (no call0 libgcc)
+│       └── kernel_esp32s3.ld   # esp32s3 linker script (IRAM/DRAM, RAM-run)
 ├── abi/
-│   └── scorpion.h               # User-space syscall inline wrappers
+│   └── scorpion.h              # User-space syscall inline wrappers
+├── docs/
+│   ├── exec-format.md          # SEF/ELF/BIN loader formats
+│   ├── dynamic-linking.md      # SEF v2 imports/exports
+│   ├── platforms.md            # Support matrix + per-platform details
+│   └── porting.md              # How to add a new platform
 ├── tools/
-│   └── packrom.py               # UF2 packer: boot2 + kernel + controller SEF
+│   ├── packrom.py              # UF2 packer: boot2 + kernel + controller SEF
+│   ├── elf2sef.py              # ELF → SEF converter
+│   └── mkimage_esp32c3.py      # Kernel ELF → flashable ESP32-C3 image
 ├── user/
-│   ├── mksef.py               # SEF builder: ELF → SEF conversion
-│   ├── controller.S              # Controller process (PRIV_CONTROLLER)
-│   └── test_user.S              # Test user process (PRIV_USER)
-└── pico-sdk-2.3.0/              # Vendored Raspberry Pi Pico SDK v2.3.0
-    └── ...                       # (used for toolchain configuration only)
+│   ├── controller.S            # Controller process (PRIV_CONTROLLER)
+│   └── test_user.S             # Test user process (PRIV_USER)
+└── pico-sdk-2.3.0/             # Vendored Raspberry Pi Pico SDK v2.3.0
+    └── ...                     # (used for toolchain configuration only)
 ```
 
 ---

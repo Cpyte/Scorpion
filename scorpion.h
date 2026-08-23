@@ -115,6 +115,17 @@ typedef enum {
     PROCESS_TERMINATED
 } ProcessState;
 
+/* Per-CPU saved register context for a suspended thread. The exact
+ * contents depend on the architecture — see the matching context.S.
+ * Under Xtensa call0 only sp and a12–a15 are callee-saved; RV32 saves
+ * the full conventional set. */
+#if defined(__xtensa__)
+typedef struct {
+    uintptr_t pc;   /* resume address (= a0 at switch time) */
+    uintptr_t sp;
+    uintptr_t s[4]; /* a12–a15 */
+} CpuContext;
+#else
 typedef struct {
     uintptr_t pc;
     uintptr_t ra;
@@ -123,7 +134,8 @@ typedef struct {
     uintptr_t tp;
     uintptr_t s[12];
     uintptr_t mstatus;
-} RiscVContext;
+} CpuContext;
+#endif
 
 typedef struct {
     uint32_t type;
@@ -157,7 +169,7 @@ typedef struct Process {
     void *argument;
     struct Process *next;
     struct Process *prev;
-    RiscVContext context;
+    CpuContext context;
     bool context_initialized;
     uint32_t wake_tick;
     Message msg_queue[IPC_QUEUE_DEPTH];
@@ -180,6 +192,25 @@ typedef struct Process {
     uint16_t lib_count;
 } Process;
 
+/* Full trap frame built by arch/<isa>/trap entry assembly before the C
+ * handler runs. Field NAMES are shared across architectures on purpose:
+ * generic code (trap.c) is written against them.
+ *
+ * RV32: standard machine frame. Xtensa: a0–a15 plus SAR/EXCVADDR, with
+ * "mepc"=EPC1, "mstatus"=PS and a synthesized "mcause" — either an
+ * exception's EXCCAUSE or 0x80000000|<cpu interrupt number> when the
+ * entry came from an interrupt (matching how RISC-V encodes interrupts).
+ */
+#if defined(__xtensa__)
+typedef struct {
+    uint32_t a[16];
+    uint32_t sar;
+    uint32_t excvaddr;
+    uint32_t mstatus;   /* PS at trap time */
+    uint32_t mepc;      /* EPC1 */
+    uint32_t mcause;    /* EXCCAUSE or 0x80000000|cpu_int */
+} TrapFrame;
+#else
 typedef struct {
     uintptr_t mepc;
     uintptr_t ra;
@@ -192,9 +223,44 @@ typedef struct {
     uintptr_t mcause;
     uintptr_t mepc_saved;
     uintptr_t mstatus;
-} RiscVTrapFrame;
+} TrapFrame;
+#endif
 
-void context_switch(RiscVContext *old, RiscVContext *next);
+/*
+ * Syscall argument/return conventions differ per architecture. Generic
+ * syscall dispatch goes through these macros so trap.c stays shared:
+ *
+ *   RV32:   sysno in a7, args a0–a3, return value in a0, ecall = 4 bytes
+ *   Xtensa: sysno in a2, args a3–a6, return value in a2, syscall insn
+ *           is 3 bytes long
+ */
+#if defined(__xtensa__)
+#define TRAP_SYSCALL_NO(frame)  ((frame)->a[2])
+#define TRAP_ARG(frame, n)      ((frame)->a[(n) + 3])
+#define TRAP_RET(frame, v) \
+    ((void)((frame)->a[2] = (uint32_t)(uintptr_t)(v)))
+#define TRAP_ADVANCE_PC(frame)  ((void)((frame)->mepc += 3))
+#else
+#define TRAP_SYSCALL_NO(frame)  ((frame)->a[7])
+#define TRAP_ARG(frame, n)      ((frame)->a[n])
+#define TRAP_RET(frame, v) \
+    ((void)((frame)->a[0] = (uintptr_t)(v)))
+#define TRAP_ADVANCE_PC(frame)  ((void)((frame)->mepc += 4))
+#endif
+
+/*
+ * "Did this trap come from user mode?" — used to decide whether a CPU
+ * fault should terminate the offending process instead of panicking.
+ *   RV32:   MPP[12:11] == 00 means U-mode
+ *   Xtensa: PS.UM (bit 5) set means user ring
+ */
+#if defined(__xtensa__)
+#define TRAP_IN_USER_MODE(frame) (((frame)->mstatus & 0x20u) != 0)
+#else
+#define TRAP_IN_USER_MODE(frame) (((frame)->mstatus & 0x1800u) == 0)
+#endif
+
+void context_switch(CpuContext *old, CpuContext *next);
 
 #define MAX_CORES 4u
 
@@ -232,7 +298,7 @@ typedef struct {
 } ProcessQueue;
 
 typedef struct {
-    RiscVContext context;
+    CpuContext context;
     uint8_t stack[PROCESS_STACK_SIZE];
 } CoreScheduler;
 
@@ -249,7 +315,7 @@ void add_process(Process *proc, uint16_t priority);
 int runprocess(void);
 int killprocess(void);
 
-void trap_handler(RiscVTrapFrame *frame);
+void trap_handler(TrapFrame *frame);
 void trap_init(void);
 
 void console_init(void);
@@ -287,30 +353,60 @@ void process_init(void);
 void timer_init(void);
 void timer_irq(void);
 
+/* ------------------------------------------------------------------ *
+ * Architecture intrinsics: CSR access, interrupt masking, exception
+ * cause constants and the idle instruction. Everything below is
+ * per-ISA; generic code only uses the names, never the encodings.
+ * ------------------------------------------------------------------ */
+
+#if defined(__xtensa__)
+
+/*
+ * Xtensa (ESP32-S3 LX7), built with the call0 ABI (no register
+ * windows): WOE stays off for the whole kernel, so window overflow/
+ * underflow vectors can never fire.
+ */
+
+#define MCAUSE_ECALL_U     1u    /* EXCCAUSE_SYSCALL (we run ring 0) */
+#define MCAUSE_ECALL_M     1u
+#define MCAUSE_INSN_FAULT  0u    /* EXCCAUSE_ILLEGAL */
+#define MCAUSE_LOAD_FAULT  3u    /* EXCCAUSE_LOADSTORE_ERROR */
+#define MCAUSE_STORE_FAULT 3u
+#define MCAUSE_INSN_PF     2u    /* EXCCAUSE_INSTR_ERROR */
+#define MCAUSE_LOAD_PF     20u   /* EXCCAUSE_LOAD_PROHIBITED */
+#define MCAUSE_STORE_PF    28u   /* EXCCAUSE_STORE_PROHIBITED */
+
+static inline uint32_t irq_save(void)
+{
+    uint32_t ps;
+    /* rsil atomically returns the old PS while raising INTLEVEL to 15. */
+    __asm__ volatile ("rsil %0, 15" : "=r"(ps) : : "memory");
+    return ps;
+}
+
+static inline void irq_restore(uint32_t ps)
+{
+    __asm__ volatile ("wsr.ps %0; rsync" : : "r"(ps) : "memory");
+}
+
+#define ARCH_IDLE() __asm__ volatile ("waiti 0")
+
+#else /* !__xtensa__ — RV32 machine mode */
+
+#define MCAUSE_ECALL_U      8u
+#define MCAUSE_ECALL_M     11u
+#define MCAUSE_INSN_FAULT   1u
+#define MCAUSE_LOAD_FAULT   5u
+#define MCAUSE_STORE_FAULT  7u
+#define MCAUSE_INSN_PF     12u
+#define MCAUSE_LOAD_PF     13u
+#define MCAUSE_STORE_PF    15u
+
 #define CSR_MSTATUS 0x300
 #define CSR_MIE     0x304
 #define CSR_MEPC    0x341
 #define CSR_MCAUSE  0x342
 #define CSR_MIP     0x344
-
-#define MCAUSE_TIMER_IRQ    (0x80000000u | 7u)
-#define MCAUSE_ECALL_U      8u
-#define MCAUSE_ECALL_M      11u
-#define MCAUSE_INSN_FAULT   1u
-#define MCAUSE_LOAD_FAULT   5u
-#define MCAUSE_STORE_FAULT  7u
-#define MCAUSE_INSN_PF      12u
-#define MCAUSE_LOAD_PF      13u
-#define MCAUSE_STORE_PF     15u
-
-#define PMP_CFG_OFF   0x00u
-#define PMP_CFG_TOR   0x18u
-#define PMP_CFG_NAPOT 0x1Cu
-#define PMP_CFG_R     0x04u
-#define PMP_CFG_W     0x02u
-#define PMP_CFG_X     0x01u
-#define PMP_CFG_L     0x80u
-#define PMP_CFG_RWX   (PMP_CFG_R | PMP_CFG_W | PMP_CFG_X)
 
 #define csr_read(csr) ({ \
     uint32_t _v; \
@@ -333,5 +429,9 @@ static inline void irq_restore(uint32_t mstatus)
 {
     __asm__ volatile ("csrw mstatus, %0" : : "r"(mstatus) : "memory");
 }
+
+#define ARCH_IDLE() __asm__ volatile ("wfi")
+
+#endif /* __xtensa__ */
 
 #endif

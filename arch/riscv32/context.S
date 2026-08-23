@@ -1,7 +1,7 @@
 /*
  * context_switch — Cooperative RISC-V context switch (RV32).
  *
- *   void context_switch(RiscVContext *old, RiscVContext *next);
+ *   void context_switch(CpuContext *old, CpuContext *next);
  *
  *   a0 — pointer to the outgoing process context (saved)
  *   a1 — pointer to the incoming process context (restored)
@@ -37,8 +37,8 @@
     .type context_switch, @function
 
 /*
- * void context_switch(RiscVContext *old,
- *                     RiscVContext *next);
+ * void context_switch(CpuContext *old,
+ *                     CpuContext *next);
  *
  * a0 = old context, or NULL
  * a1 = next context

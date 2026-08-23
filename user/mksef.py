@@ -8,7 +8,11 @@ production, author SEF binaries directly using the format spec in
 docs/exec-format.md.
 """
 
-import struct, sys, subprocess, os
+import os
+import struct
+import subprocess
+import sys
+
 
 def build(elf_path, sef_output, flags=0):
     if not os.path.isfile(elf_path):

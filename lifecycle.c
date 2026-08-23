@@ -67,7 +67,7 @@ static void idle_process(void *argument)
     (void)argument;
 
     for (;;) {
-        __asm__ volatile ("wfi");
+        ARCH_IDLE();
         yield();
     }
 }
@@ -81,8 +81,11 @@ static void scheduler_context_init(void)
     stack_top &= ~(uintptr_t)0xF;
 
     scheduler[core].context.pc = (uintptr_t)scheduler_entry;
-    scheduler[core].context.ra = (uintptr_t)scheduler_entry;
     scheduler[core].context.sp = stack_top;
+#if defined(__xtensa__)
+    /* call0: pc alone is the resume address; nothing else to prime. */
+#else
+    scheduler[core].context.ra = (uintptr_t)scheduler_entry;
     scheduler[core].context.gp = 0;
     scheduler[core].context.tp = 0;
     scheduler[core].context.mstatus = 0x1808u;
@@ -90,6 +93,7 @@ static void scheduler_context_init(void)
     for (unsigned i = 0; i < 12; i++) {
         scheduler[core].context.s[i] = 0;
     }
+#endif
 }
 
 void scheduler_init(void)
@@ -300,71 +304,8 @@ int evict_lowest_priority(size_t min_freed)
     return 0;
 }
 
-#define SIO_BASE            0xd0000000u
-#define SIO_MTIME_CTRL      0x1a0
-#define SIO_MTIME           0x1b0
-#define SIO_MTIMEH          0x1b4
-#define SIO_MTIMECMP        0x1b8
-#define SIO_MTIMECMPH       0x1bc
-
-#define MTIME_CTRL_EN       1u
-#define MTIME_CTRL_FULLSPEED 2u
-
-#define TIMER_INTERVAL      1000000u
-
-static inline uint64_t timer_read(void)
-{
-    volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
-    uint32_t h0, l, h1;
-    do {
-        h0 = sio[SIO_MTIMEH / 4];
-        l  = sio[SIO_MTIME  / 4];
-        h1 = sio[SIO_MTIMEH / 4];
-    } while (h0 != h1);
-    return l | ((uint64_t)h1 << 32);
-}
-
-static inline void timer_set_cmp(uint64_t cmp)
-{
-    volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
-    sio[SIO_MTIMECMP / 4]  = 0xffffffffu;
-    sio[SIO_MTIMECMPH / 4] = (uint32_t)(cmp >> 32);
-    sio[SIO_MTIMECMP / 4]  = (uint32_t)(cmp & 0xffffffffu);
-}
-
-/* Per-core part: arm this core's comparator and enable its timer interrupt.
- * MTIME is shared, but MTIMECMP and MIE are per-core, so each core must call
- * this for itself. */
-void timer_enable(void)
-{
-    timer_set_cmp(timer_read() + TIMER_INTERVAL);
-
-    uint32_t mie;
-    __asm__ volatile ("csrr %0, 0x304" : "=r"(mie));
-    mie |= 0x80u;
-    __asm__ volatile ("csrw 0x304, %0" : : "r"(mie));
-}
-
-void timer_init(void)
-{
-    volatile uint32_t *sio = (volatile uint32_t *)SIO_BASE;
-
-    sio[SIO_MTIME_CTRL / 4] = MTIME_CTRL_EN | MTIME_CTRL_FULLSPEED;
-
-    sio[SIO_MTIME / 4] = 0;
-    sio[SIO_MTIMEH / 4] = 0;
-    sio[SIO_MTIME / 4] = 0;
-
-    timer_enable();
-}
-
-void timer_irq(void)
-{
-    uint64_t now = timer_read();
-    timer_set_cmp(now + TIMER_INTERVAL);
-    if (current_process[current_core_id()] != NULL)
-        yield();
-}
+/* Timer init/arm/IRQ live in platform/<name>/timer.c — see
+ * scorpion.h for the declarations. This file only contains scheduling. */
 
 void yield(void)
 {

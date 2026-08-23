@@ -6,11 +6,8 @@
 #include "flash.h"
 #include "fuse.h"
 #include "loader.h"
+#include "platform.h"
 #include "scorpion.h"
-
-#define XIP_BASE            0x10000000u
-#define CTRL_FLASH_OFFSET   0x00010000u
-#define CTRL_XIP_ADDR       ((const uint8_t *)(XIP_BASE + CTRL_FLASH_OFFSET))
 
 extern char __heap_start;
 extern char __heap_end;
@@ -21,33 +18,50 @@ static void init_process(void *argument)
 
     log_info("init: booting, will spawn controller");
 
-    /* packrom.py placed [4-byte size][controller.sef] at flash offset
-     * 0x10000.  The boot ROM loaded only the kernel to SRAM, so we read
-     * the controller via XIP. */
+    /* packrom.py placed [4-byte size][controller.sef] next to the
+     * kernel image; platform_payload_controller() knows where. */
     kernel_region.base = 0;
     kernel_region.size = (uintptr_t)&__heap_start;
     controller_region.base = 0;
     controller_region.size = 0;
 
-    uint32_t ctrl_size;
-    const uint8_t *ctrl_data;
-    int pid;
+    const uint8_t *ctrl_data = NULL;
+    uint32_t ctrl_size = 0;
+    int pid = -1;
 
-    ctrl_size = *(const uint32_t *)CTRL_XIP_ADDR;
-    ctrl_data = CTRL_XIP_ADDR + sizeof(ctrl_size);
-
-    __asm__ volatile (
-        "mv a0, %[data]\n"
-        "mv a1, %[size]\n"
-        "li a2, 1\n"
-        "li a7, 12\n"
-        "ecall\n"
-        "mv %[pid], a0\n"
-        : [pid] "=r" (pid)
-        : [data] "r" (ctrl_data),
-          [size] "r" (ctrl_size)
-        : "a0", "a1", "a2", "a7", "memory"
-    );
+    if (platform_payload_controller(&ctrl_data, &ctrl_size) == 0) {
+#if defined(__xtensa__)
+        /* call0 syscall convention: sysno in a2, args a3–a6, result
+         * back in a2. */
+        __asm__ volatile (
+            "mov a3, %[data]\n"
+            "mov a4, %[size]\n"
+            "movi a5, 1\n"
+            "movi a2, 12\n"
+            "syscall\n"
+            "mov %[pid], a2\n"
+            : [pid] "=r" (pid)
+            : [data] "r" (ctrl_data),
+              [size] "r" (ctrl_size)
+            : "a2", "a3", "a4", "a5", "memory"
+        );
+#else
+        __asm__ volatile (
+            "mv a0, %[data]\n"
+            "mv a1, %[size]\n"
+            "li a2, 1\n"
+            "li a7, 12\n"
+            "ecall\n"
+            "mv %[pid], a0\n"
+            : [pid] "=r" (pid)
+            : [data] "r" (ctrl_data),
+              [size] "r" (ctrl_size)
+            : "a0", "a1", "a2", "a7", "memory"
+        );
+#endif
+    } else {
+        log_warn("init: no embedded controller payload on this platform");
+    }
 
     if (pid < 0) {
         log_error("init: failed to spawn controller (%d)", pid);
@@ -63,7 +77,7 @@ static void init_process(void *argument)
 static void kernel_main(void)
 {
     console_init();
-    log_info("Scorpion kernel booting on RISC-V");
+    log_info("Scorpion kernel booting (%s)", PLATFORM_NAME);
 
     alloc_init();
     log_info("allocator initialized");

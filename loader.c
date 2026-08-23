@@ -126,13 +126,17 @@ static int elf_load(const void *data, size_t size, Process *proc)
     }
 
     proc->context.pc = (uintptr_t)base + (ehdr->entry - first_vaddr);
-    proc->context.ra = 0;
     proc->context.sp = ((uintptr_t)base + total_mem + USER_STACK_SIZE) & ~(uintptr_t)0xF;
-    proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
     proc->stack_size = USER_STACK_SIZE;
+#if defined(__xtensa__)
+    for (unsigned i = 0; i < 4; i++) proc->context.s[i] = 0;
+#else
+    proc->context.ra = 0;
+    proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
     for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
     proc->context.gp = 0;
     proc->context.tp = 0;
+#endif
 
     proc->state = PROCESS_READY;
     proc->context_initialized = true;
@@ -593,22 +597,29 @@ static int sef_load(const void *data, size_t size, Process *proc)
     }
 
     proc->context.pc = (uintptr_t)base + entry;
-    proc->context.gp = (uintptr_t)base;
 
     uintptr_t stack_top = (uintptr_t)base + total + USER_STACK_SIZE;
     stack_top &= ~(uintptr_t)0xF;
     proc->context.sp = stack_top;
 
+#if defined(__xtensa__)
+    for (unsigned i = 0; i < 4; i++) proc->context.s[i] = 0;
+#else
+    /* RV32 SEF images are linked GP-relative to their load base. */
+    proc->context.gp = (uintptr_t)base;
     for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
     proc->context.ra = 0;
     proc->context.tp = 0;
+#endif
 
     if (flags & SEF_FLAG_PRIV_CONTROLLER) {
         proc->privilege = PRIV_CONTROLLER;
     } else {
         proc->privilege = PRIV_USER;
     }
+#if !defined(__xtensa__)
     proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
+#endif
     proc->stack_size = USER_STACK_SIZE;
 
     proc->state = PROCESS_READY;
@@ -681,13 +692,17 @@ int process_load_binary(const void *data, size_t size,
     int ret = bin_load(data, size, proc);
     if (ret == 0) {
         proc->context.pc = entry_addr;
-        proc->context.ra = 0;
         proc->context.sp = ((uintptr_t)proc->text_base + proc->text_size +
                             USER_STACK_SIZE) & ~(uintptr_t)0xF;
+#if defined(__xtensa__)
+        for (unsigned i = 0; i < 4; i++) proc->context.s[i] = 0;
+#else
+        proc->context.ra = 0;
         proc->context.mstatus = (proc->privilege == PRIV_USER) ? 0x0088u : 0x1808u;
         for (unsigned i = 0; i < 12; i++) proc->context.s[i] = 0;
         proc->context.gp = 0;
         proc->context.tp = 0;
+#endif
     }
     return ret;
 }
