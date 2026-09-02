@@ -252,6 +252,30 @@ static int sef_apply_relocs(uint8_t *base, uint32_t total,
     return (p == end) ? 0 : -1;
 }
 
+/* A resolved import patches a word or an instruction pair at img+slot.
+ * Return the number of bytes the import may write at that slot, or 0 if the
+ * relocation type is unknown/rejected. */
+static uint32_t sef_import_extent(uint32_t type)
+{
+    switch (type) {
+    case SEF_R_RELATIVE:
+    case SEF_R_HI20:
+    case SEF_R_LO12I:
+    case SEF_R_LO12S:
+        return 4;
+    case SEF_R_CALL:
+        return 8;   /* auipc + jalr pair */
+    default:
+        return 0;
+    }
+}
+
+static bool sef_import_slot_valid(uint32_t type, uint32_t slot, uint32_t total)
+{
+    uint32_t extent = sef_import_extent(type);
+    return extent != 0 && slot <= total && extent <= total - slot;
+}
+
 static char *sef_copy_name(const uint8_t *p, uint32_t name_len)
 {
     char *name = alloc_(name_len + 1);
@@ -262,7 +286,7 @@ static char *sef_copy_name(const uint8_t *p, uint32_t name_len)
 }
 
 static int sef_parse_imports(Process *proc, const uint8_t *data, size_t size,
-                             uint32_t foff, uint32_t fsize)
+                             uint32_t foff, uint32_t fsize, uint32_t total)
 {
     if (foff + fsize > size) return -1;
 
@@ -292,6 +316,12 @@ static int sef_parse_imports(Process *proc, const uint8_t *data, size_t size,
         uint32_t slot    = rd_u32(p + 4);
         uint32_t name_len = rd_u32(p + 8);
         const uint8_t *namep = p + sizeof(SefImportRecord);
+
+        if (!sef_import_slot_valid(type, slot, total)) {
+            for (uint32_t j = 0; j < i; j++) free_(list[j].name);
+            free_(list);
+            return -1;
+        }
 
         list[i].type = type;
         list[i].slot = slot;
@@ -576,7 +606,8 @@ static int sef_load(const void *data, size_t size, Process *proc)
             if (type != SEG_IMPORT) continue;
             if (sef_parse_imports(proc, d, size,
                                   rd_u32(d + 12 + i * 16 + 12),
-                                  rd_u32(d + 12 + i * 16 + 8)) != 0) {
+                                  rd_u32(d + 12 + i * 16 + 8),
+                                  total) != 0) {
                 ufree_(base);
                 return -1;
             }

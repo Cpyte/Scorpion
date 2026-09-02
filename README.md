@@ -64,7 +64,7 @@ Just read these diagrams.
 │        ▼               ▼               ▼                    │
 │  ┌──────────────────────────────────────────────────┐       │
 │  │        Trap Handler  (machine mode)               │       │
-│  │  dispatching 14 syscalls + machine-timer IRQ      │       │
+│  │  dispatching 15 syscalls + machine-timer IRQ      │       │
 │  └──────────────────────┬───────────────────────────┘       │
 │                         │                                    │
 │  ┌──────────────────────┼───────────────────────────┐       │
@@ -344,6 +344,15 @@ heap allocator).
 Up to **4 cores** (`MAX_CORES`) are supported, each with its own scheduler
 context and current-process pointer.
 
+On SMP builds every queue operation (`add_process`, `runprocess`,
+`killprocess`, `wake_sleeping_processes`, `process_by_pid`,
+`evict_lowest_priority`) runs under a global `queue_lock` with interrupts
+masked (`irq_save`/`irq_restore`): masking prevents a same-core timer-ISR
+`yield()` from re-entering a queue critical section and self-deadlocking, and
+the lock keeps remote cores out. The lock is **never held across
+`context_switch`** — it is released before switching, re-acquired on resume.
+Lock order is strict: `queue_lock` → allocator locks → `console_lock`.
+
 ### 4. Machine Timer (`lifecycle.c`)
 
 The RP2350 provides a RISC-V platform timer in the SIO register block
@@ -393,7 +402,7 @@ Machine-mode trap handling:
   - On any other exception: kills the faulting user process or calls
     `panic()`.
 
-**System calls (14 total):**
+**System calls (15 total):**
 
 | #  | Name      | Arguments               | Description                              |
 |----|-----------|-------------------------|------------------------------------------|
@@ -411,6 +420,7 @@ Machine-mode trap handling:
 | 11 | PUTC      | `a0=str, a1=len`       | Write string to UART console            |
 | 12 | SPAWN     | `a0=sef_data, a1=size, a2=priority` | Spawn a new process from SEF data |
 | 13 | TERMINATE | `a0=pid`              | Terminate a process by PID             |
+| 14 | LOADLIB   | `a0=sef_data, a1=size` | Dynamically link a SEF library into   the calling process              |
 
 ### 7. UART Console (`console.c`)
 
@@ -419,6 +429,11 @@ Machine-mode trap handling:
   (IO_BANK0 function select 2), sets 115200 baud, 8n1 framing, and enables the
   UART.
 - `console_putchar(c)`, `console_write(s, len)`, `console_puts(s)`.
+- **Line buffering** — kernel diagnostics through `console_write` (the PUTC
+  syscall path) go straight to the UART; `console_puts`/`log_*` output is
+  buffered in a 128-byte line buffer (`CONSOLE_BUF_MAX`) and flushed on
+  newline or when full via `console_flush()`. A `console_lock` spinlock plus
+  masked interrupts (`irq_save`/`irq_restore`) protect every output path.
 - Formatted logging: `log_info`, `log_warn`, `log_error`, `panic` with
   `%s`, `%d`, `%u`, `%x`, `%p` format specifiers.
 
@@ -443,10 +458,15 @@ A generic driver registration and I/O framework:
   `FLASH_STORAGE_OFFSET` (rp2350: `0x20000`, esp32c3/s3: `0x10000`) so FUSE
   can never clobber the boot image or embedded payloads.
 - `flash_read()`, `flash_write()`, `flash_erase()` — block-oriented operations.
-- `flash_write()` automatically erases the containing 4 KB sector before
-  programming (NOR flash requires erase-to-ones before write).
-- Erase uses 4 KB sector granularity (bootrom `flash_range_erase` with
-  `FLASH_SECTOR_SIZE`).
+- **Write-back sector cache** — `flash_write()` patches a 4 KB sector image in
+  RAM (`FLASH_CACHE_SLOTS` such images; NOR flash requires erase-to-ones, so a
+  raw write cannot be done in place). Dirty sectors are flushed to flash with
+  erase+program by `flash_sync()` (called at FUSE commit points) or when a slot
+  must be evicted. `flash_read()` and `flash_erase()` consult the cache first,
+  so within-session reads observe the dirty image. Erase uses 4 KB sector
+  granularity (bootrom `flash_range_erase` with `FLASH_SECTOR_SIZE`).
+- Cache access is serialized by a `flash_cache_lock` spinlock with interrupts
+  masked during RAM-side patching/eviction.
 - RP2350 bootrom functions located by code lookup (`ROM_CODE('R', 'E')`, etc.)
   through the RP2350's `rom_table_lookup`.
 
@@ -458,6 +478,10 @@ A simple flat filesystem layered on the platform flash backend:
 - **Directory entries**: up to 16 files, 24-character names, size, first block, mode.
 - **File descriptors**: up to 16 open files simultaneously.
 - **Operations**: `fuse_open`, `fuse_close`, `fuse_read`, `fuse_write`, `fuse_list`.
+- **RAM directory cache** — entry blocks are cached in RAM on open and written
+  back on `fuse_close` (close = commit). Writes within a session hit the flash
+  write-back cache and are flushed to flash at commit. Power loss before close
+  loses uncommitted writes; `fuse_init` re-reads the directory from flash.
 - Auto-formats the flash if no valid superblock is found.
 
 ### 11. Executable Loader (`loader.c`)

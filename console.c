@@ -8,12 +8,25 @@
 /*
  * Console formatting layer. All hardware access goes through the
  * platform hooks declared in platform.h (see platform/<name>/uart.c).
+ *
+ * Kernel diagnostics go through a line buffer and are written to the
+ * UART as a contiguous burst when the line ends (or the buffer fills),
+ * instead of polling the TX FIFO once per character. User-facing
+ * console_write (the PUTC syscall) stays synchronous so the caller's
+ * bytes reach the wire before the call returns.
+ *
+ * Every output path masks interrupts for its critical section. This
+ * keeps a console-lock holder from being preempted on the same core
+ * into a path that needs another lock acquired while the console lock
+ * is held (e.g. the scheduler queue lock via a timer-ISR yield), which
+ * would deadlock the SMP pair.
  */
 
-void console_init(void)
-{
-    platform_console_init();
-}
+#define CONSOLE_BUF_MAX 128
+
+static char console_buf[CONSOLE_BUF_MAX];
+static unsigned console_buf_len;
+static spinlock_t console_lock;
 
 static void uart_putchar(char c)
 {
@@ -24,25 +37,78 @@ static void uart_putchar(char c)
     platform_uart_putc(c);
 }
 
-void console_putchar(char c)
+static void flush_locked(void)
 {
-    uart_putchar(c);
+    for (unsigned i = 0; i < console_buf_len; i++) {
+        uart_putchar(console_buf[i]);
+    }
+    console_buf_len = 0;
 }
 
-// Man, pieces of software these days are full of potatoes!
+static void putchar_buffered(char c)
+{
+    if (console_buf_len >= CONSOLE_BUF_MAX) {
+        flush_locked();
+    }
+    console_buf[console_buf_len++] = c;
+    if (c == '\n') {
+        flush_locked();
+    }
+}
+
+void console_flush(void)
+{
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&console_lock);
+    flush_locked();
+    spinlock_unlock(&console_lock);
+    irq_restore(flags);
+}
+
+void console_init(void)
+{
+    spinlock_init(&console_lock);
+    platform_console_init();
+}
+
+void console_putchar(char c)
+{
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&console_lock);
+    putchar_buffered(c);
+    spinlock_unlock(&console_lock);
+    irq_restore(flags);
+}
 
 void console_write(const char *s, size_t len)
 {
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&console_lock);
+    flush_locked();
     for (size_t i = 0; i < len; i++) {
         uart_putchar(s[i]);
     }
+    spinlock_unlock(&console_lock);
+    irq_restore(flags);
 }
 
 void console_puts(const char *s)
 {
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&console_lock);
     while (*s) {
-        uart_putchar(*s++);
+        putchar_buffered(*s++);
     }
+    spinlock_unlock(&console_lock);
+    irq_restore(flags);
 }
 
 static void vlog(int level, const char *fmt, va_list ap)
@@ -58,7 +124,7 @@ static void vlog(int level, const char *fmt, va_list ap)
     const char *p = prefix[level];
 
     while (*p) {
-        uart_putchar(*p++);
+        console_putchar(*p++);
     }
 
     for (const char *s = fmt; *s; s++) {
@@ -68,7 +134,7 @@ static void vlog(int level, const char *fmt, va_list ap)
             case 's': {
                 const char *str = va_arg(ap, const char *);
                 while (*str) {
-                    uart_putchar(*str++);
+                    console_putchar(*str++);
                 }
                 break;
             }
@@ -134,20 +200,20 @@ static void vlog(int level, const char *fmt, va_list ap)
 
                 for (int j = sizeof(uintptr_t) * 2 - 1; j >= 0; j--) {
                     unsigned d = (val >> (j * 4)) & 0xF;
-                    uart_putchar((char)(d < 10 ? '0' + d : 'a' + d - 10));
+                    console_putchar((char)(d < 10 ? '0' + d : 'a' + d - 10));
                 }
                 break;
             }
             default:
-                uart_putchar(*s);
+                console_putchar(*s);
                 break;
             }
         } else {
-            uart_putchar(*s);
+            console_putchar(*s);
         }
     }
 
-    uart_putchar('\n');
+    console_putchar('\n');
 }
 
 void log_message(int level, const char *fmt, ...)
@@ -191,6 +257,7 @@ void __attribute__((noreturn)) panic(const char *fmt, ...)
     va_end(ap);
 
     console_puts("--- system halted ---\n");
+    console_flush();
 
     for (;;) {
         ARCH_IDLE();

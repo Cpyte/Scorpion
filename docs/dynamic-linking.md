@@ -264,8 +264,13 @@ Done during implementation, without hardware:
   silently missed (v1 limitation; in practice the WEW runtime is linked in and
   externals are only syscalls).
 - The loader trusts the image the controller passes to `SYS_LOADLIB`/`SYS_SPAWN`
-  (the same trust model as SPAWN): import `slot` values are not bounds-checked
-  at bind time.
+  (the same trust model as SPAWN) but validates the metadata it acts on: every
+  import `slot` is bounds-checked against the mapped image size at parse time
+  (`sef_import_slot_valid` in `loader.c`), so a slot (plus the write extent of
+  its relocation type: 4 bytes, or 8 for `SEF_R_CALL`) must stay within the
+  image — an out-of-range slot fails the load. Export `value`s are only used as
+  the *target* of an address write into an already-validated slot and so cannot
+  be abused as a write primitive.
 - Forward references between libs are handled by iterative binding (load order
   independent).
 - Max per-process libs: `SEF_MAX_LIBS` (default 4). Import/export counts are

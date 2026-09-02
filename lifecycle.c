@@ -11,6 +11,12 @@ CoreScheduler scheduler[MAX_CORES];
 uint32_t tick_count = 0;
 uint32_t next_pid = 1;
 
+/* Serializes access to the shared ready queue and its nodes. Never held
+ * across a context_switch: the exchange of RUNNING/READY state happens
+ * under it, but the actual switch releases it first (see runprocess).
+ * Lock order is strict: queue_lock -> allocator locks. */
+static spinlock_t queue_lock;
+
 void process_exit(void)
 {
     const unsigned core = current_core_id();
@@ -24,18 +30,27 @@ void process_exit(void)
 
 void add_process(Process *proc, uint16_t priority)
 {
-    ProcessNode *new_node = alloc_(sizeof(ProcessNode));
+    ProcessNode *new_node;
+    ProcessNode *next;
+    uint32_t flags;
+
+    new_node = alloc_(sizeof(ProcessNode));
 
     new_node->process = proc;
     new_node->priority = priority;
     new_node->next = NULL;
     new_node->prev = NULL;
 
-    ProcessNode *next = queue.head;
+    flags = irq_save();
+    spinlock_lock(&queue_lock);
+
+    next = queue.head;
 
     if (next == NULL) {
         queue.head = new_node;
         queue.tail = new_node;
+        spinlock_unlock(&queue_lock);
+        irq_restore(flags);
         return;
     }
 
@@ -47,6 +62,8 @@ void add_process(Process *proc, uint16_t priority)
         new_node->prev = queue.tail;
         queue.tail->next = new_node;
         queue.tail = new_node;
+        spinlock_unlock(&queue_lock);
+        irq_restore(flags);
         return;
     }
 
@@ -60,6 +77,9 @@ void add_process(Process *proc, uint16_t priority)
     }
 
     next->prev = new_node;
+
+    spinlock_unlock(&queue_lock);
+    irq_restore(flags);
 }
 
 static void idle_process(void *argument)
@@ -144,58 +164,90 @@ void scheduler_entry(void)
 int runprocess(void)
 {
     const unsigned core = current_core_id();
-    ProcessNode *p = queue.head;
+    int switched = 0;
+    uint32_t flags;
 
-    while (p != NULL) {
-        Process *next = p->process;
+    for (;;) {
+        ProcessNode *p;
 
-        if (next->state == PROCESS_READY &&
-            next != exclude_list[core]) {
+        /* Interrupts are masked for the selection window so a same-core
+         * timer IRQ cannot re-enter the scheduler while the queue lock
+         * is held (yield() from the ISR would spin on queue_lock). The
+         * spinlock still guards the other core; we restore MIE before
+         * the switch so the resumed process preempts normally. */
+        flags = irq_save();
+        spinlock_lock(&queue_lock);
+        p = queue.head;
 
-            if (!next->context_initialized) {
-                process_init_context(next);
+        while (p != NULL) {
+            Process *next = p->process;
+
+            if (next->state == PROCESS_READY &&
+                next != exclude_list[core]) {
+
+                if (!next->context_initialized) {
+                    process_init_context(next);
+                }
+
+                next->state = PROCESS_RUNNING;
+                current_process[core] = next;
+                exclude_list[core] = NULL;
+
+                spinlock_unlock(&queue_lock);
+                irq_restore(flags);
+                context_switch(&scheduler[core].context, &next->context);
+                switched = 1;
+                break;
             }
 
-            next->state = PROCESS_RUNNING;
-            current_process[core] = next;
-            exclude_list[core] = NULL;
-
-            context_switch(&scheduler[core].context, &next->context);
-
-            return 0;
+            p = p->next;
         }
 
-        p = p->next;
-    }
+        if (!switched) {
+            p = queue.head;
 
-    p = queue.head;
+            while (p != NULL) {
+                Process *next = p->process;
 
-    while (p != NULL) {
-        Process *next = p->process;
+                if (next->state == PROCESS_READY) {
+                    if (!next->context_initialized) {
+                        process_init_context(next);
+                    }
 
-        if (next->state == PROCESS_READY) {
-            if (!next->context_initialized) {
-                process_init_context(next);
+                    next->state = PROCESS_RUNNING;
+                    current_process[core] = next;
+                    exclude_list[core] = NULL;
+
+                    spinlock_unlock(&queue_lock);
+                    irq_restore(flags);
+                    context_switch(&scheduler[core].context, &next->context);
+                    switched = 1;
+                    break;
+                }
+
+                p = p->next;
             }
-
-            next->state = PROCESS_RUNNING;
-            current_process[core] = next;
-            exclude_list[core] = NULL;
-
-            context_switch(&scheduler[core].context, &next->context);
-
-            return 0;
         }
 
-        p = p->next;
-    }
+        if (!switched) {
+            spinlock_unlock(&queue_lock);
+            irq_restore(flags);
+            return 1;
+        }
 
-    return 1;
+        /* Resumed after the process yielded back; rescan from the head. */
+        switched = 0;
+    }
 }
 
 int killprocess(void)
 {
-    ProcessNode *p = queue.head;
+    ProcessNode *p;
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&queue_lock);
+    p = queue.head;
 
     while (p != NULL) {
         if (p->process->state == PROCESS_TERMINATED) {
@@ -221,12 +273,17 @@ int killprocess(void)
             process_free_libs(p->process);
             free_(p->process);
             free_(p);
+            spinlock_unlock(&queue_lock);
+            irq_restore(flags);
 
             return 0;
         }
 
         p = p->next;
     }
+
+    spinlock_unlock(&queue_lock);
+    irq_restore(flags);
 
     return 1;
 }
@@ -263,7 +320,13 @@ int process_terminate(Process *proc)
 int evict_lowest_priority(size_t min_freed)
 {
     ProcessNode *best = NULL;
-    ProcessNode *p = queue.head;
+    ProcessNode *p;
+    Process *victim;
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&queue_lock);
+    p = queue.head;
 
     while (p != NULL) {
         Process *proc = p->process;
@@ -282,25 +345,35 @@ int evict_lowest_priority(size_t min_freed)
         p = p->next;
     }
 
-    if (best == NULL) return -1;
+    if (best == NULL) {
+        spinlock_unlock(&queue_lock);
+        irq_restore(flags);
+        return -1;
+    }
 
-    ProcessNode *prev = best->prev;
-    ProcessNode *next = best->next;
-    if (prev != NULL)
-        prev->next = next;
-    else
-        queue.head = next;
-    if (next != NULL)
-        next->prev = prev;
-    else
-        queue.tail = prev;
+    {
+        ProcessNode *prev = best->prev;
+        ProcessNode *next = best->next;
+        if (prev != NULL)
+            prev->next = next;
+        else
+            queue.head = next;
+        if (next != NULL)
+            next->prev = prev;
+        else
+            queue.tail = prev;
+    }
 
-    Process *victim = best->process;
+    victim = best->process;
+
     log_info("evict: terminating pid=%u priority=%u",
              victim->pid, best->priority);
     process_terminate(victim);
     free_(victim);
     free_(best);
+
+    spinlock_unlock(&queue_lock);
+    irq_restore(flags);
     return 0;
 }
 
@@ -338,16 +411,26 @@ void wake_process(Process *p)
 
 Process *process_by_pid(uint32_t pid)
 {
-    ProcessNode *p = queue.head;
+    ProcessNode *p;
+    Process *found = NULL;
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&queue_lock);
+    p = queue.head;
 
     while (p != NULL) {
         if (p->process->pid == pid) {
-            return p->process;
+            found = p->process;
+            break;
         }
         p = p->next;
     }
 
-    return NULL;
+    spinlock_unlock(&queue_lock);
+    irq_restore(flags);
+
+    return found;
 }
 
 void sleep_process(uint32_t ticks)
@@ -363,7 +446,12 @@ void sleep_process(uint32_t ticks)
 
 void wake_sleeping_processes(void)
 {
-    ProcessNode *p = queue.head;
+    ProcessNode *p;
+    uint32_t flags;
+
+    flags = irq_save();
+    spinlock_lock(&queue_lock);
+    p = queue.head;
 
     while (p != NULL) {
         Process *proc = p->process;
@@ -376,6 +464,9 @@ void wake_sleeping_processes(void)
 
         p = p->next;
     }
+
+    spinlock_unlock(&queue_lock);
+    irq_restore(flags);
 }
 
 int send_message(Process *target, uint32_t type, const void *data, size_t len)
